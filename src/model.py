@@ -1,6 +1,5 @@
 import pickle
 import os
-import shap
 import numpy as np
 
 from sklearn.model_selection import train_test_split
@@ -31,7 +30,7 @@ def train_model(df):
 
     model.fit(X_train, y_train)
 
-    probs = model.predict_proba(X_test)[:,1]
+    probs = model.predict_proba(X_test)[:, 1]
 
     precision, recall, thresholds = precision_recall_curve(y_test, probs)
     f1 = 2*(precision*recall)/(precision+recall+1e-10)
@@ -40,7 +39,7 @@ def train_model(df):
 
     print("ROC:", roc_auc_score(y_test, probs))
 
-    # Save everything
+    # Save artifacts
     pickle.dump(model, open(MODEL_PATH, "wb"))
     pickle.dump(X.columns.tolist(), open(FEATURE_PATH, "wb"))
     pickle.dump(X.mean(), open(MEAN_PATH, "wb"))
