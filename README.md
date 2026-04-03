@@ -4,6 +4,8 @@ An end-to-end ML fraud detection dashboard built with XGBoost and Streamlit.
 
 ## Live App
 
+🔗 **[your-app-url.streamlit.app](https://your-app-url.streamlit.app)** ← replace with your actual URL
+
 Deploy directly to [Streamlit Cloud](https://streamlit.io/cloud) — no extra config needed.
 
 ## Features
