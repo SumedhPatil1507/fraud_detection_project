@@ -1,6 +1,6 @@
 # 🚨 Enterprise Fraud Detection System
 
-An elite-level end-to-end ML fraud detection system with stacking ensemble, Optuna tuning, SHAP explainability, drift detection, FastAPI serving, MLflow tracking, and a Streamlit dashboard.
+An end-to-end ML fraud detection system with stacking ensemble, Optuna tuning, SHAP explainability, drift detection, FastAPI serving, MLflow tracking, and a Streamlit dashboard.
 
 ## Live App
 
