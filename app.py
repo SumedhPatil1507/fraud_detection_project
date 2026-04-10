@@ -31,7 +31,7 @@ st.sidebar.header("⚙️ Controls")
 fn_cost = st.sidebar.number_input("False Negative Cost ($)", value=5000, step=500)
 fp_cost = st.sidebar.number_input("False Positive Cost ($)", value=200, step=50)
 use_optuna = st.sidebar.checkbox("Use Optuna Tuning", value=True)
-n_trials = st.sidebar.slider("Optuna Trials", 10, 50, 20) if use_optuna else 20
+n_trials = st.sidebar.slider("Optuna Trials", 5, 30, 10) if use_optuna else 10
 st.sidebar.markdown("---")
 st.sidebar.markdown("**API**")
 st.sidebar.code("uvicorn api:app --reload --port 8000", language="bash")
@@ -170,15 +170,20 @@ with tab_shap:
                      if hasattr(model, 'estimators_') else model)
 
         st.subheader("Global Feature Importance (SHAP)")
-        X_sample = X_test.sample(min(300, len(X_test)), random_state=42)
-        with st.spinner("Computing SHAP values..."):
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Mean |SHAP| — Bar**")
-                st.pyplot(plot_shap_summary(xgb_model, X_sample))
-            with c2:
-                st.markdown("**Beeswarm — Direction & Magnitude**")
-                st.pyplot(plot_shap_beeswarm(xgb_model, X_sample))
+        X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
+
+        @st.cache_data(show_spinner="Computing SHAP values...")
+        def get_shap_plots(_xgb_model, _X_sample):
+            return plot_shap_summary(_xgb_model, _X_sample), plot_shap_beeswarm(_xgb_model, _X_sample)
+
+        fig_bar, fig_bee = get_shap_plots(xgb_model, X_sample)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Mean |SHAP| — Bar**")
+            st.pyplot(fig_bar)
+        with c2:
+            st.markdown("**Beeswarm — Direction & Magnitude**")
+            st.pyplot(fig_bee)
 
         st.subheader("Single Prediction Explanation")
         with st.form("shap_form"):

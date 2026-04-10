@@ -34,27 +34,34 @@ from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH, TRAIN_DIST_PATH, MOD
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 
-def _optuna_tune(X_train, y_train, n_trials=30):
+def _optuna_tune(X_train, y_train, n_trials=15):
     """Tune XGBoost hyperparameters with Optuna."""
     import optuna
+    # Use a subsample for tuning speed — full data used for final fit
+    sample_size = min(5000, len(X_train))
+    idx = np.random.default_rng(42).choice(len(X_train), sample_size, replace=False)
+    X_s = X_train.iloc[idx]
+    y_s = y_train.iloc[idx]
+
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-    neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
+    neg, pos = (y_s == 0).sum(), (y_s == 1).sum()
     scale = neg / pos if pos > 0 else 1
 
     def objective(trial):
         params = dict(
-            n_estimators=trial.suggest_int("n_estimators", 100, 400),
-            max_depth=trial.suggest_int("max_depth", 3, 8),
-            learning_rate=trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            subsample=trial.suggest_float("subsample", 0.6, 1.0),
-            colsample_bytree=trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            min_child_weight=trial.suggest_int("min_child_weight", 1, 10),
+            n_estimators=trial.suggest_int("n_estimators", 50, 200),
+            max_depth=trial.suggest_int("max_depth", 3, 6),
+            learning_rate=trial.suggest_float("learning_rate", 0.05, 0.2, log=True),
+            subsample=trial.suggest_float("subsample", 0.7, 1.0),
+            colsample_bytree=trial.suggest_float("colsample_bytree", 0.7, 1.0),
+            min_child_weight=trial.suggest_int("min_child_weight", 1, 5),
             scale_pos_weight=scale,
             eval_metric='logloss',
             random_state=42,
+            n_jobs=-1,
         )
         model = XGBClassifier(**params)
-        scores = cross_val_score(model, X_train, y_train, cv=cv,
+        scores = cross_val_score(model, X_s, y_s, cv=cv,
                                  scoring='roc_auc', n_jobs=-1)
         return scores.mean()
 
@@ -66,20 +73,20 @@ def _optuna_tune(X_train, y_train, n_trials=30):
 def _build_ensemble(best_params, scale):
     """Stacking ensemble: XGBoost + LightGBM → Logistic Regression meta."""
     xgb = XGBClassifier(**best_params, scale_pos_weight=scale,
-                        eval_metric='logloss', random_state=42)
+                        eval_metric='logloss', random_state=42, n_jobs=-1)
     estimators = [("xgb", xgb)]
     if _LGBM_AVAILABLE:
         lgbm = LGBMClassifier(
-            n_estimators=200, learning_rate=0.05,
-            scale_pos_weight=scale, random_state=42, verbose=-1
+            n_estimators=100, learning_rate=0.1,
+            scale_pos_weight=scale, random_state=42, verbose=-1, n_jobs=-1
         )
         estimators.append(("lgbm", lgbm))
-    meta = LogisticRegression(max_iter=1000, random_state=42)
+    meta = LogisticRegression(max_iter=500, random_state=42)
     return StackingClassifier(estimators=estimators, final_estimator=meta,
                               cv=3, passthrough=False, n_jobs=-1)
 
 
-def train_model(df, use_optuna=True, n_trials=30):
+def train_model(df, use_optuna=True, n_trials=15):
     y = df['label']
     X = df.drop(columns=['label', 'financial_loss'], errors='ignore')
     X = X.select_dtypes(include=['number'])
@@ -95,14 +102,15 @@ def train_model(df, use_optuna=True, n_trials=30):
     if use_optuna and _OPTUNA_AVAILABLE:
         best_params = _optuna_tune(X_train, y_train, n_trials=n_trials)
     else:
-        best_params = dict(n_estimators=200, max_depth=6, learning_rate=0.05,
-                           subsample=0.8, colsample_bytree=0.8, min_child_weight=3)
+        best_params = dict(n_estimators=100, max_depth=5, learning_rate=0.1,
+                           subsample=0.8, colsample_bytree=0.8, min_child_weight=3,
+                           n_jobs=-1)
 
     # ── Stacking ensemble ──────────────────────────────────────────────────────
     ensemble = _build_ensemble(best_params, scale)
 
-    # ── Cross-validation on ensemble ───────────────────────────────────────────
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # ── Cross-validation (3-fold for speed) ───────────────────────────────────
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     cv_scores = cross_val_score(ensemble, X_train, y_train, cv=cv,
                                 scoring='roc_auc', n_jobs=-1)
 
