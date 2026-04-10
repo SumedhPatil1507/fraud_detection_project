@@ -30,8 +30,9 @@ df = get_data()
 st.sidebar.header("⚙️ Controls")
 fn_cost = st.sidebar.number_input("False Negative Cost ($)", value=5000, step=500)
 fp_cost = st.sidebar.number_input("False Positive Cost ($)", value=200, step=50)
-use_optuna = st.sidebar.checkbox("Use Optuna Tuning", value=True)
-n_trials = st.sidebar.slider("Optuna Trials", 5, 30, 10) if use_optuna else 10
+use_optuna = st.sidebar.checkbox("Use Optuna Tuning", value=False,
+                                  help="Slower but finds better params. Disable for fast training.")
+n_trials = st.sidebar.slider("Optuna Trials", 5, 20, 10) if use_optuna else 10
 st.sidebar.markdown("---")
 st.sidebar.markdown("**API**")
 st.sidebar.code("uvicorn api:app --reload --port 8000", language="bash")
@@ -71,7 +72,7 @@ with tab_data:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_train:
     st.subheader("Train Stacking Ensemble (XGBoost + LightGBM → Logistic Regression)")
-    st.info("Optuna tunes XGBoost hyperparameters → stacking ensemble → calibrated probabilities → 5-fold CV.")
+    st.info("XGBoost + LightGBM soft-vote ensemble with calibrated probabilities and 3-fold CV. Enable Optuna in sidebar for hyperparameter tuning.")
 
     if st.button("🚀 Train Model", type="primary"):
         with st.spinner("Running Optuna + training ensemble..."):
@@ -150,7 +151,7 @@ with tab_metrics:
         st.pyplot(plot_confusion_matrix(y_test, probs, threshold))
         st.pyplot(plot_threshold_analysis(y_test, probs))
         st.pyplot(plot_feature_importance(
-            st.session_state.model.estimators_[0][1]
+            st.session_state.model.estimators_[0]
             if hasattr(st.session_state.model, 'estimators_') else model,
             st.session_state.X_test.columns.tolist()
         ))
@@ -166,7 +167,7 @@ with tab_shap:
         X_test = st.session_state.X_test
 
         # Use the XGBoost base estimator for SHAP (TreeExplainer requirement)
-        xgb_model = (model.estimators_[0][1]
+        xgb_model = (model.estimators_[0]
                      if hasattr(model, 'estimators_') else model)
 
         st.subheader("Global Feature Importance (SHAP)")
