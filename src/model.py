@@ -1,8 +1,6 @@
 import pickle
 import os
 import numpy as np
-import mlflow
-import mlflow.xgboost
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics import roc_auc_score, precision_recall_curve, classification_report
@@ -11,6 +9,13 @@ from xgboost import XGBClassifier
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH, MODEL_DIR
 
 os.makedirs(MODEL_DIR, exist_ok=True)
+
+try:
+    import mlflow
+    import mlflow.xgboost
+    _MLFLOW_AVAILABLE = True
+except Exception:
+    _MLFLOW_AVAILABLE = False
 
 
 def train_model(df):
@@ -54,19 +59,20 @@ def train_model(df):
     )
 
     # MLflow logging
-    try:
-        mlflow.set_experiment("fraud_detection")
-        with mlflow.start_run():
-            mlflow.log_params(params)
-            mlflow.log_metric("roc_auc", roc)
-            mlflow.log_metric("cv_roc_auc_mean", float(cv_scores.mean()))
-            mlflow.log_metric("cv_roc_auc_std", float(cv_scores.std()))
-            mlflow.log_metric("best_threshold", best_threshold)
-            mlflow.log_metric("fraud_precision", report["Fraud"]["precision"])
-            mlflow.log_metric("fraud_recall", report["Fraud"]["recall"])
-            mlflow.xgboost.log_model(model, "model")
-    except Exception:
-        pass  # MLflow optional — don't break training if unavailable
+    if _MLFLOW_AVAILABLE:
+        try:
+            mlflow.set_experiment("fraud_detection")
+            with mlflow.start_run():
+                mlflow.log_params(params)
+                mlflow.log_metric("roc_auc", roc)
+                mlflow.log_metric("cv_roc_auc_mean", float(cv_scores.mean()))
+                mlflow.log_metric("cv_roc_auc_std", float(cv_scores.std()))
+                mlflow.log_metric("best_threshold", best_threshold)
+                mlflow.log_metric("fraud_precision", report["Fraud"]["precision"])
+                mlflow.log_metric("fraud_recall", report["Fraud"]["recall"])
+                mlflow.xgboost.log_model(model, "model")
+        except Exception:
+            pass  # MLflow optional — don't break training if unavailable
 
     pickle.dump(model, open(MODEL_PATH, "wb"))
     pickle.dump(X.columns.tolist(), open(FEATURE_PATH, "wb"))
