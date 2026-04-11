@@ -111,10 +111,15 @@ def train_model(df, use_optuna=False, n_trials=10):
     model.fit(X_train, y_train)
 
     # ── Calibrate ─────────────────────────────────────────────────────────────
-    calibrated = CalibratedClassifierCV(model, cv="prefit", method="isotonic")
-    calibrated.fit(X_test, y_test)
+    try:
+        calibrated = CalibratedClassifierCV(model, cv="prefit", method="isotonic")
+        calibrated.fit(X_test, y_test)
+        final_model = calibrated
+    except Exception:
+        # Fallback if calibration fails — use model directly
+        final_model = model
 
-    probs = calibrated.predict_proba(X_test)[:, 1]
+    probs = final_model.predict_proba(X_test)[:, 1]
     precision, recall, thresholds = precision_recall_curve(y_test, probs)
     f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
     best_threshold = float(thresholds[np.argmax(f1)])
@@ -136,9 +141,9 @@ def train_model(df, use_optuna=False, n_trials=10):
                         "std": float(X_train[col].std() + 1e-10)}
                   for col in X_train.columns}
     pickle.dump(train_dist, open(TRAIN_DIST_PATH, "wb"))
-    pickle.dump(calibrated, open(MODEL_PATH, "wb"))
+    pickle.dump(final_model, open(MODEL_PATH, "wb"))
     pickle.dump(X.columns.tolist(), open(FEATURE_PATH, "wb"))
     pickle.dump(X.mean(), open(MEAN_PATH, "wb"))
 
-    return (calibrated, X_test, y_test, probs, best_threshold,
+    return (final_model, X_test, y_test, probs, best_threshold,
             roc, report, cv_scores, anomaly_scores, best_params)
