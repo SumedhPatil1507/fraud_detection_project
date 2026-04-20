@@ -5,7 +5,7 @@ matplotlib
 seaborn
 scikit-learn
 xgboost
-shap
+shap>=0.46.0
 networkx
 scipy
 joblib
