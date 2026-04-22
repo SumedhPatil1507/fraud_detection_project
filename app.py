@@ -12,11 +12,19 @@ from src.model import train_model
 from src.business import compute_business_cost
 from src.drift import detect_drift, plot_drift
 from src.audit import log_prediction, load_audit_log
-from src.simulator import generate_batch, score_transaction, stream_one
+from src.simulator import generate_batch, score_transaction
 from src.pii import mask_pii
 from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
+
+# Inline stream_one to avoid import issues on cloud
+def stream_one(fraud_rate=0.2, seed=None):
+    from src.simulator import generate_transaction
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    is_fraud = rng.random() < fraud_rate
+    return generate_transaction(rng, fraud=is_fraud)
 from src.plots import (
     plot_class_distribution, plot_amount_distribution, plot_amount_box,
     plot_correlation_heatmap, plot_roc_curve, plot_precision_recall,
