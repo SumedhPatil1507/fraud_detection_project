@@ -3,6 +3,7 @@ pandas
 numpy
 matplotlib
 seaborn
+plotly
 scikit-learn
 xgboost
 shap>=0.46.0
@@ -12,6 +13,5 @@ joblib
 altair>=5.0.0
 requests
 attrs
-groq
 openpyxl
 pyarrow
