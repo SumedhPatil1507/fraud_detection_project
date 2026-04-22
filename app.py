@@ -4,13 +4,15 @@ import numpy as np
 import pickle
 import os
 import time
+import plotly.express as px
+import plotly.graph_objects as go
 
 from src.pipeline import run_pipeline
 from src.model import train_model
 from src.business import compute_business_cost
 from src.drift import detect_drift, plot_drift
 from src.audit import log_prediction, load_audit_log
-from src.simulator import generate_batch, score_transaction
+from src.simulator import generate_batch, score_transaction, stream_one
 from src.pii import mask_pii
 from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
@@ -446,10 +448,12 @@ with tab_predict:
                 f'"threshold": {pred_threshold}}}\'', language="bash")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 7 — LIVE STREAM SIMULATION
+# TAB 7 — LIVE TRANSACTION STREAM
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_live:
-    st.subheader("🔴 Live Transaction Stream Simulation")
+    st.subheader("🔴 Live Transaction Stream")
+    st.caption("Simulates a real-time feed of incoming transactions scored by the model.")
+
     if not os.path.exists(MODEL_PATH):
         st.warning("Train the model first.")
     else:
@@ -457,50 +461,111 @@ with tab_live:
         features = pickle.load(open(FEATURE_PATH, "rb"))
         means    = pickle.load(open(MEAN_PATH, "rb"))
 
-        c1, c2, c3 = st.columns(3)
-        batch_size     = c1.slider("Batch size", 5, 50, 20)
-        sim_fraud_rate = c2.slider("Fraud rate", 0.05, 0.5, 0.2)
-        sim_threshold  = c3.slider("Alert threshold", 0.1, 0.9, 0.3, key="sim_thresh")
+        # ── Controls ───────────────────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns(4)
+        sim_fraud_rate = c1.slider("Fraud rate", 0.05, 0.5, 0.2, key="live_fr")
+        sim_threshold  = c2.slider("Alert threshold", 0.1, 0.9, 0.3, key="live_th")
+        stream_speed   = c3.selectbox("Speed", [0.5, 1, 2, 3], index=1,
+                                       format_func=lambda x: f"{x}s/txn")
+        max_history    = c4.slider("History size", 20, 200, 50)
 
-        if st.button("▶️ Generate Live Batch", type="primary"):
-            seed = int(time.time()) % 100000
-            txns = generate_batch(n=batch_size, fraud_rate=sim_fraud_rate, seed=seed)
-            scored = [score_transaction(t, model, features, means, sim_threshold)
-                      for t in txns]
-            results_df = pd.DataFrame(scored)
+        col_start, col_stop, col_clear = st.columns(3)
+        start = col_start.button("▶️ Start Stream", type="primary")
+        stop  = col_stop.button("⏹ Stop")
+        clear = col_clear.button("🗑 Clear")
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Processed", batch_size)
-            c2.metric("Flagged", int(results_df['predicted_fraud'].sum()))
-            c3.metric("Avg Prob", f"{results_df['fraud_probability'].mean():.2%}")
-            if 'true_label' in results_df.columns:
-                acc = (results_df['predicted_fraud'] == results_df['true_label']).mean()
-                c4.metric("Batch Accuracy", f"{acc:.1%}")
+        if clear:
+            st.session_state.live_feed = []
+            st.rerun()
+        if stop:
+            st.session_state.streaming = False
 
-            # Interactive probability chart
-            fig_stream = px.bar(
-                results_df.reset_index(), x='index', y='fraud_probability',
-                color='risk_level',
-                color_discrete_map={'🔴 HIGH': '#e74c3c',
-                                    '🟡 MEDIUM': '#e67e22', '🟢 LOW': '#2ecc71'},
-                title='Fraud Probability per Transaction',
-                labels={'index': 'Transaction #', 'fraud_probability': 'Fraud Probability'}
+        if "live_feed" not in st.session_state:
+            st.session_state.live_feed = []
+        if "streaming" not in st.session_state:
+            st.session_state.streaming = False
+        if start:
+            st.session_state.streaming = True
+
+        # ── Live metrics placeholders ──────────────────────────────────────────
+        m1, m2, m3, m4 = st.columns(4)
+        ph_total   = m1.empty()
+        ph_fraud   = m2.empty()
+        ph_rate    = m3.empty()
+        ph_avg     = m4.empty()
+
+        ph_chart   = st.empty()
+        ph_alerts  = st.empty()
+        ph_table   = st.empty()
+
+        def render_live(feed):
+            if not feed:
+                return
+            fdf = pd.DataFrame(feed[-max_history:])
+            total   = len(fdf)
+            flagged = int(fdf['predicted_fraud'].sum())
+            rate    = flagged / total * 100
+            avg_p   = fdf['fraud_probability'].mean()
+
+            ph_total.metric("Transactions", total)
+            ph_fraud.metric("Flagged", flagged)
+            ph_rate.metric("Fraud Rate", f"{rate:.1f}%")
+            ph_avg.metric("Avg Prob", f"{avg_p:.2%}")
+
+            # Probability time series
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=list(range(len(fdf))), y=fdf['fraud_probability'],
+                mode='lines+markers',
+                marker=dict(color=fdf['predicted_fraud'].map(
+                    {1: '#e74c3c', 0: '#2ecc71'})),
+                line=dict(color='#3498db', width=1.5),
+                name='Fraud Prob'
+            ))
+            fig.add_hline(y=sim_threshold, line_dash='dash',
+                          line_color='red', annotation_text='Threshold')
+            fig.update_layout(
+                title='Live Fraud Probability Feed',
+                xaxis_title='Transaction #',
+                yaxis_title='Fraud Probability',
+                yaxis=dict(range=[0, 1]),
+                height=300, margin=dict(t=40, b=30)
             )
-            fig_stream.add_hline(y=sim_threshold, line_dash='dash',
-                                 line_color='red', annotation_text='Threshold')
-            st.plotly_chart(fig_stream, use_container_width=True)
+            ph_chart.plotly_chart(fig, use_container_width=True)
 
-            display_cols = [c for c in ['transaction_amount', 'distance_from_home_km',
-                            'hour', 'is_foreign', 'vpn_detected', 'fraud_probability',
-                            'risk_level', 'true_label', 'predicted_fraud']
-                            if c in results_df.columns]
+            # Recent alerts
+            alerts = fdf[fdf['predicted_fraud'] == 1].tail(5)
+            if not alerts.empty:
+                alert_cols = [c for c in ['timestamp', 'transaction_amount',
+                              'distance_from_home_km', 'fraud_probability',
+                              'risk_level'] if c in alerts.columns]
+                ph_alerts.error(
+                    f"🚨 {len(alerts)} recent alert(s)\n" +
+                    alerts[alert_cols].to_string(index=False))
 
-            def highlight_row(row):
-                return (['background-color: #ffe0e0'] * len(row)
-                        if row.get('predicted_fraud', 0) == 1 else [''] * len(row))
+            # Table
+            disp_cols = [c for c in ['timestamp', 'transaction_amount',
+                         'distance_from_home_km', 'hour', 'fraud_probability',
+                         'risk_level', 'predicted_fraud'] if c in fdf.columns]
+            ph_table.dataframe(
+                fdf[disp_cols].tail(20).sort_index(ascending=False),
+                use_container_width=True)
 
-            st.dataframe(results_df[display_cols].style.apply(highlight_row, axis=1),
-                         use_container_width=True)
+        # ── Stream loop ────────────────────────────────────────────────────────
+        if st.session_state.streaming:
+            for _ in range(200):  # max 200 txns per run
+                if not st.session_state.streaming:
+                    break
+                seed = int(time.time() * 1000) % 999999
+                txn = stream_one(fraud_rate=sim_fraud_rate, seed=seed)
+                scored = score_transaction(txn, model, features, means, sim_threshold)
+                st.session_state.live_feed.append(scored)
+                if len(st.session_state.live_feed) > max_history:
+                    st.session_state.live_feed = st.session_state.live_feed[-max_history:]
+                render_live(st.session_state.live_feed)
+                time.sleep(stream_speed)
+        else:
+            render_live(st.session_state.live_feed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 8 — HITL REVIEW
@@ -509,30 +574,62 @@ with tab_hitl:
     render_hitl_tab()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — AUDIT LOG
+# TAB 9 — AUDIT LOG (with live refresh)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_audit:
     st.subheader("🗂️ Prediction Audit Log")
+
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        auto_refresh = st.toggle("🔴 Live Refresh", value=False)
+        refresh_interval = st.selectbox("Interval", [5, 10, 30], index=1,
+                                        format_func=lambda x: f"{x}s")
+
     audit_df = load_audit_log()
     if audit_df.empty:
         st.info("No predictions logged yet. Make predictions in the Predict tab.")
     else:
-        c1, c2, c3 = st.columns(3)
+        audit_df['timestamp'] = pd.to_datetime(audit_df['timestamp'])
+
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Predictions", len(audit_df))
         c2.metric("Flagged as Fraud", int(audit_df['is_fraud'].sum()))
         c3.metric("Avg Fraud Prob", f"{audit_df['fraud_probability'].mean():.2%}")
+        c4.metric("Last Updated", audit_df['timestamp'].max().strftime("%H:%M:%S"))
 
-        audit_df['timestamp'] = pd.to_datetime(audit_df['timestamp'])
-
-        # Interactive time series
-        fig_audit = px.scatter(audit_df, x='timestamp', y='fraud_probability',
-                               color='is_fraud',
-                               color_discrete_map={True: '#e74c3c', False: '#2ecc71'},
-                               title='Fraud Probability Over Time',
-                               labels={'fraud_probability': 'Fraud Probability',
-                                       'timestamp': 'Time', 'is_fraud': 'Flagged'})
-        fig_audit.add_hline(y=0.3, line_dash='dash', line_color='orange')
+        fig_audit = px.scatter(
+            audit_df, x='timestamp', y='fraud_probability',
+            color='is_fraud',
+            color_discrete_map={True: '#e74c3c', False: '#2ecc71'},
+            title='Fraud Probability Over Time',
+            labels={'fraud_probability': 'Fraud Probability',
+                    'timestamp': 'Time', 'is_fraud': 'Flagged'},
+            hover_data=[c for c in ['transaction_amount',
+                        'distance_from_home_km', 'hour'] if c in audit_df.columns]
+        )
+        fig_audit.add_hline(y=0.3, line_dash='dash', line_color='orange',
+                            annotation_text='Default threshold')
         st.plotly_chart(fig_audit, use_container_width=True)
+
+        # Fraud rate trend
+        if len(audit_df) >= 5:
+            audit_df_sorted = audit_df.sort_values('timestamp')
+            audit_df_sorted['rolling_fraud_rate'] = (
+                audit_df_sorted['is_fraud'].rolling(5, min_periods=1).mean() * 100
+            )
+            fig_trend = px.line(audit_df_sorted, x='timestamp',
+                                y='rolling_fraud_rate',
+                                title='Rolling Fraud Rate (5-prediction window)',
+                                labels={'rolling_fraud_rate': 'Fraud Rate (%)'})
+            fig_trend.add_hline(y=audit_df['is_fraud'].mean() * 100,
+                                line_dash='dash', line_color='red',
+                                annotation_text='Overall avg')
+            st.plotly_chart(fig_trend, use_container_width=True)
 
         st.dataframe(audit_df.sort_values("timestamp", ascending=False),
                      use_container_width=True)
+
+    if auto_refresh:
+        st.caption(f"Auto-refreshing every {refresh_interval}s...")
+        time.sleep(refresh_interval)
+        st.rerun()
