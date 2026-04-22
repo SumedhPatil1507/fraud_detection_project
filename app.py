@@ -174,7 +174,7 @@ with tab_shap:
 
         X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
 
-        @st.cache_data(show_spinner="Computing SHAP values...")
+        @st.cache_resource(show_spinner="Computing SHAP values...")
         def get_shap_plots(_m, _X):
             return plot_shap_summary(_m, _X), plot_shap_beeswarm(_m, _X)
 
