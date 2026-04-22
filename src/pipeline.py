@@ -73,8 +73,12 @@ def graph_features(df_raw):
     return df_raw[['customer_degree', 'merchant_degree', 'graph_risk_score']]
 
 
-def run_pipeline(uploaded_file=None):
-    df_raw, source = load_data(uploaded_file)
+def run_pipeline(uploaded_file=None, raw_df=None):
+    if raw_df is not None:
+        df_raw = raw_df
+        source = "uploaded"
+    else:
+        df_raw, source = load_data(uploaded_file)
     graph_feats = graph_features(df_raw)
     df = preprocess(df_raw)
     df = feature_engineering(df)

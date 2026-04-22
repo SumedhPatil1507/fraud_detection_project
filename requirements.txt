@@ -13,3 +13,5 @@ altair>=5.0.0
 requests
 attrs
 groq
+openpyxl
+pyarrow
