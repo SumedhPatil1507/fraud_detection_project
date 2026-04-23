@@ -136,14 +136,28 @@ def train_model(df, use_optuna=False, n_trials=10):
     iso.fit(X_train.iloc[:iso_sample])
     anomaly_scores = -iso.score_samples(X_test)
 
-    # ── Save artifacts ─────────────────────────────────────────────────────────
+    # ── Save artifacts with versioning ────────────────────────────────────────
+    from datetime import datetime
+    import glob
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    versioned_path = os.path.join(MODEL_DIR, f"model_{timestamp}.pkl")
+
     train_dist = {col: {"mean": float(X_train[col].mean()),
                         "std": float(X_train[col].std() + 1e-10)}
                   for col in X_train.columns}
     pickle.dump(train_dist, open(TRAIN_DIST_PATH, "wb"))
     pickle.dump(final_model, open(MODEL_PATH, "wb"))
+    pickle.dump(final_model, open(versioned_path, "wb"))
     pickle.dump(X.columns.tolist(), open(FEATURE_PATH, "wb"))
     pickle.dump(X.mean(), open(MEAN_PATH, "wb"))
+
+    # Keep only last 3 versioned models
+    versioned = sorted(glob.glob(os.path.join(MODEL_DIR, "model_*.pkl")))
+    for old in versioned[:-3]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
 
     return (final_model, X_test, y_test, probs, best_threshold,
             roc, report, cv_scores, anomaly_scores, best_params)

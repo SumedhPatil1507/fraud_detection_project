@@ -15,7 +15,8 @@ import pickle
 import os
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
@@ -27,7 +28,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ── Load artifacts at startup ──────────────────────────────────────────────────
+# ── API Key Auth ───────────────────────────────────────────────────────────────
+API_KEY = os.environ.get("API_KEY", "fraud-dev-key")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def verify_api_key(key: str = Security(api_key_header)):
+    if key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key.")
+    return key
+
 _model = None
 _features = None
 _means = None

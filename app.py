@@ -11,11 +11,12 @@ from src.pipeline import run_pipeline
 from src.model import train_model
 from src.business import compute_business_cost
 from src.drift import detect_drift, plot_drift
-from src.audit import log_prediction, load_audit_log
 from src.simulator import generate_batch, score_transaction
 from src.pii import mask_pii
 from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
+from src.database import log_prediction, load_predictions, get_stats
+from src.auth import check_auth, logout
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
 
 # Inline stream_one to avoid import issues on cloud
@@ -45,6 +46,12 @@ st.markdown("""
 
 st.title("🚨 Enterprise Fraud Detection System")
 st.caption("XGBoost · LightGBM · SHAP · Drift Detection · HITL · Live Simulation")
+
+# ── Auth gate ──────────────────────────────────────────────────────────────────
+if not check_auth():
+    st.stop()
+
+st.sidebar.button("🚪 Logout", on_click=logout)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Data Source")
@@ -416,7 +423,8 @@ with tab_predict:
             input_df = pd.DataFrame([{f: base.get(f, 0) for f in features}])
             prob = model.predict_proba(input_df)[0][1]
             pred = int(prob >= pred_threshold)
-            log_prediction(amount, distance, hour, prob, bool(pred), pred_threshold)
+            log_prediction(amount, distance, hour, is_foreign,
+                           is_new_dev, vpn, prob, bool(pred), pred_threshold)
 
             # Gauge chart
             fig_gauge = go.Figure(go.Indicator(
@@ -587,22 +595,28 @@ with tab_hitl:
 with tab_audit:
     st.subheader("🗂️ Prediction Audit Log")
 
+    # DB source indicator
+    stats = get_stats()
+    db_badge = "🟢 Supabase" if stats["source"] == "supabase" else "🟡 Local CSV"
+    st.caption(f"Storage: {db_badge}")
+
     col1, col2 = st.columns([3, 1])
     with col2:
         auto_refresh = st.toggle("🔴 Live Refresh", value=False)
         refresh_interval = st.selectbox("Interval", [5, 10, 30], index=1,
                                         format_func=lambda x: f"{x}s")
 
-    audit_df = load_audit_log()
+    audit_df = load_predictions()
     if audit_df.empty:
         st.info("No predictions logged yet. Make predictions in the Predict tab.")
     else:
         audit_df['timestamp'] = pd.to_datetime(audit_df['timestamp'])
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Predictions", len(audit_df))
-        c2.metric("Flagged as Fraud", int(audit_df['is_fraud'].sum()))
-        c3.metric("Avg Fraud Prob", f"{audit_df['fraud_probability'].mean():.2%}")
+        c1.metric("Total Predictions", stats["total"])
+        c2.metric("Flagged as Fraud", stats["fraud"])
+        fraud_pct = stats["fraud"] / max(stats["total"], 1) * 100
+        c3.metric("Fraud Rate", f"{fraud_pct:.1f}%")
         c4.metric("Last Updated", audit_df['timestamp'].max().strftime("%H:%M:%S"))
 
         fig_audit = px.scatter(
@@ -619,7 +633,6 @@ with tab_audit:
                             annotation_text='Default threshold')
         st.plotly_chart(fig_audit, use_container_width=True)
 
-        # Fraud rate trend
         if len(audit_df) >= 5:
             audit_df_sorted = audit_df.sort_values('timestamp')
             audit_df_sorted['rolling_fraud_rate'] = (

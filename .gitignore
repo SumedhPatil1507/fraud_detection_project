@@ -1,7 +1,11 @@
 venv/
-__pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
 outputs/
 data/
 model.pkl
 .vscode/
+.python-version
+*.egg-info/
+.env

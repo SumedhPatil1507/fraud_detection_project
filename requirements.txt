@@ -10,8 +10,8 @@ shap>=0.46.0
 networkx
 scipy
 joblib
-altair>=5.0.0
 requests
 attrs
 openpyxl
 pyarrow
+supabase
