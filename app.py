@@ -16,7 +16,6 @@ from src.pii import mask_pii
 from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
 from src.database import log_prediction, load_predictions, get_stats
-from src.auth import check_auth, logout
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
 
 # Inline stream_one to avoid import issues on cloud
@@ -46,12 +45,6 @@ st.markdown("""
 
 st.title("🚨 Enterprise Fraud Detection System")
 st.caption("XGBoost · LightGBM · SHAP · Drift Detection · HITL · Live Simulation")
-
-# ── Auth gate ──────────────────────────────────────────────────────────────────
-if not check_auth():
-    st.stop()
-
-st.sidebar.button("🚪 Logout", on_click=logout)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Data Source")
