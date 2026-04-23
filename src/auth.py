@@ -9,9 +9,12 @@ import hashlib
 
 def _get_password():
     try:
-        return st.secrets.get("APP_PASSWORD")
+        val = st.secrets.get("APP_PASSWORD")
+        if val:
+            return val
     except Exception:
-        return os.environ.get("APP_PASSWORD", "admin123")
+        pass
+    return os.environ.get("APP_PASSWORD", "admin123")
 
 
 def check_auth() -> bool:
