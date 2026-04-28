@@ -15,3 +15,9 @@ attrs
 openpyxl
 pyarrow
 supabase
+fastapi
+uvicorn
+pydantic
+cryptography
+slowapi
+groq
