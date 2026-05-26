@@ -150,8 +150,4 @@ MIT — see [LICENSE](LICENSE)
 
 ---
 
-## Built by a College Student
-
-Demonstrates senior ML engineer skills: graph intelligence, true async parallelism, cryptographic tokenization, FinCEN SAR compliance, production FastAPI, full-stack ML + security + DevOps.
-
 **GitHub:** [@SumedhPatil1507](https://github.com/SumedhPatil1507) · **⭐ Star if useful!**
