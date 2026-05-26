@@ -1,4 +1,4 @@
-﻿"""
+"""
 Shadow Mode Deployment — True Production Parallelism
 Champion and shadow models run concurrently via asyncio.gather().
 Shadow execution is offloaded to FastAPI BackgroundTasks so it never

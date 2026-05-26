@@ -1,4 +1,4 @@
-﻿"""
+"""
 FastAPI prediction service - Enterprise Edition v3.0
 Features: RBAC, async shadow mode, graph intelligence, tokenization,
           rate limiting, data validation, SAR trigger, audit logging
