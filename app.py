@@ -663,13 +663,15 @@ with tab_graph:
     st.subheader("🕸️ Graph Intelligence — Fraud Ring Detector")
     st.markdown(
         "Builds a **customer ↔ merchant bipartite graph** using NetworkX. "
-        "Detects fraud rings via connected-component analysis, betweenness centrality, "
-        "and subgraph fraud-rate thresholding."
+        "Detects rings via **merchant hubs** (shared by multiple customers), "
+        "**connected components** with elevated fraud rate, and **shared device** clusters."
     )
 
     c1, c2 = st.columns(2)
-    min_fraud_rate = c1.slider("Min ring fraud rate", 0.1, 0.9, 0.3, 0.05)
-    min_ring_size  = c2.slider("Min ring size (nodes)", 2, 10, 3)
+    min_fraud_rate = c1.slider("Min ring fraud rate", 0.05, 0.9, 0.1, 0.05,
+                                help="Lower = more rings detected. Start at 0.1 for most datasets.")
+    min_ring_size  = c2.slider("Min ring size (nodes)", 2, 10, 2,
+                                help="Minimum nodes in a ring. 2 = merchant + 1 customer.")
 
     if st.button("🔍 Detect Fraud Rings", type="primary"):
         with st.spinner("Building transaction graph and detecting rings..."):
@@ -677,11 +679,13 @@ with tab_graph:
                                         min_ring_size=min_ring_size)
 
         if not rings:
-            st.info("No fraud rings detected at current thresholds.")
+            st.warning(
+                "No fraud rings detected. Try lowering the **Min ring fraud rate** slider, "
+                "or ensure your dataset has `customer_id`, `merchant_id`, and `label` columns."
+            )
         else:
             st.success(f"🚨 {len(rings)} fraud ring(s) detected!")
 
-            # Summary metrics
             total_amount = sum(r["total_amount"] for r in rings)
             avg_fraud_rate = np.mean([r["fraud_rate"] for r in rings])
             c1, c2, c3, c4 = st.columns(4)
@@ -690,30 +694,27 @@ with tab_graph:
             c3.metric("Avg Fraud Rate", f"{avg_fraud_rate:.1%}")
             c4.metric("Largest Ring", max(r["size"] for r in rings))
 
-            # Network visualization
             fig_net = plot_fraud_ring_network(rings, max_rings=5)
             if fig_net:
                 st.plotly_chart(fig_net, use_container_width=True)
 
-            # Ring details table
             ring_df = pd.DataFrame([{
-                "Ring ID":       r["ring_id"],
-                "Size":          r["size"],
-                "Customers":     r["customer_count"],
-                "Merchants":     r["merchant_count"],
-                "Fraud Rate":    f"{r['fraud_rate']:.1%}",
-                "Total Amount":  f"${r['total_amount']:,.0f}",
-                "Fraud Txns":    r["total_fraud_txn"],
-                "Risk Level":    r["risk_level"],
-                "Hub Nodes":     ", ".join(r["hub_nodes"][:2]),
+                "Ring ID":      r["ring_id"],
+                "Type":         r.get("ring_type", ""),
+                "Size":         r["size"],
+                "Customers":    r["customer_count"],
+                "Merchants":    r["merchant_count"],
+                "Fraud Rate":   f"{r['fraud_rate']:.1%}",
+                "Total Amount": f"${r['total_amount']:,.0f}",
+                "Fraud Txns":   r["total_fraud_txn"],
+                "Risk Level":   r["risk_level"],
+                "Hub Nodes":    ", ".join(str(h) for h in r["hub_nodes"][:2]),
             } for r in rings])
             st.dataframe(ring_df, use_container_width=True)
 
-            # Graph feature distribution
             graph_cols = [c for c in df.columns if c in
                           ["graph_risk_score", "customer_degree", "merchant_degree",
-                           "customer_fraud_rate", "merchant_fraud_rate",
-                           "customer_betweenness", "ring_member"]]
+                           "customer_fraud_rate", "merchant_fraud_rate", "ring_member"]]
             if graph_cols:
                 st.subheader("Graph Feature Distributions")
                 c1, c2 = st.columns(2)
@@ -726,15 +727,16 @@ with tab_graph:
                 if "ring_member" in df.columns:
                     ring_fraud = df.groupby("ring_member")["label"].mean().reset_index()
                     ring_fraud.columns = ["Ring Member", "Fraud Rate"]
-                    ring_fraud["Ring Member"] = ring_fraud["Ring Member"].map({0: "Non-Ring", 1: "Ring Member"})
+                    ring_fraud["Ring Member"] = ring_fraud["Ring Member"].map(
+                        {0: "Non-Ring", 1: "Ring Member"})
                     fig_rm = px.bar(ring_fraud, x="Ring Member", y="Fraud Rate",
                                     color="Ring Member", title="Fraud Rate: Ring vs Non-Ring",
-                                    color_discrete_map={"Ring Member": "#e74c3c", "Non-Ring": "#2ecc71"})
+                                    color_discrete_map={"Ring Member": "#e74c3c",
+                                                        "Non-Ring": "#2ecc71"})
                     c2.plotly_chart(fig_rm, use_container_width=True)
 
-    # Show previously detected rings
     existing_rings = load_ring_log()
-    if existing_rings and not st.session_state.get("rings_just_run"):
+    if existing_rings:
         with st.expander(f"📂 Last Detected Rings ({len(existing_rings)} rings)", expanded=False):
             st.json(existing_rings[:3])
 

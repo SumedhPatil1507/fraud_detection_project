@@ -1,4 +1,4 @@
-# 🚨 FraudGuard AI — Enterprise Edition v3.0
+# 🚨 FraudGuard AI — Enterprise Edition v3.1
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
 ![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)
@@ -14,11 +14,11 @@
 
 ### 🕸️ Graph Intelligence — Fraud Ring Detector
 - Bipartite customer↔merchant graph built with **NetworkX**
-- **Betweenness centrality** + **degree** + **fraud rate** per node
-- **Connected-component fraud ring detection** with configurable thresholds
-- Ring members flagged as model features (`ring_member`, `graph_risk_score`)
+- **3 detection strategies**: merchant hubs (shared by ≥2 customers), connected components with elevated fraud rate, shared device clusters
+- **Betweenness centrality** + **degree** + **fraud rate** per node as model features
+- Ring members flagged as `ring_member` feature — boosts model signal
 - Interactive **Plotly network visualization** of detected rings
-- Replaces simple degree features with 8 rich graph features per transaction
+- Default thresholds tuned to work on sparse real-world datasets (min fraud rate 0.1)
 
 ### ⚡ True Async Shadow Mode
 - Shadow model runs via **`asyncio.create_task()`** — genuinely parallel, not sequential
