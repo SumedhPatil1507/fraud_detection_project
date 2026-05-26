@@ -1,4 +1,239 @@
-# 🚨 Enterprise Fraud Detection System — Premium Edition
+# 🚨 FraudGuard AI — Enterprise Edition v3.0
+
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
+![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**[Live Demo →](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)**
+
+> Production-grade ML fraud detection with **Graph Intelligence**, **Async Shadow Mode**, **Cryptographic Tokenization**, **RBAC**, **SAR Generation**, **Dynamic Cost Optimization**, and **Real-Time Savings Tracking**.
+
+---
+
+## 🎯 What Makes This Premium Tier
+
+### 🕸️ Graph Intelligence — Fraud Ring Detector
+- Bipartite customer↔merchant graph built with **NetworkX**
+- **Betweenness centrality** + **degree** + **fraud rate** per node
+- **Connected-component fraud ring detection** with configurable thresholds
+- Ring members flagged as model features (`ring_member`, `graph_risk_score`)
+- Interactive **Plotly network visualization** of detected rings
+- Replaces simple degree features with 8 rich graph features per transaction
+
+### ⚡ True Async Shadow Mode
+- Shadow model runs via **`asyncio.create_task()`** — genuinely parallel, not sequential
+- CPU-bound inference offloaded to **`ThreadPoolExecutor`** via `loop.run_in_executor()`
+- Audit logging dispatched as **FastAPI `BackgroundTask`** — zero response latency impact
+- Batch predictions use **`asyncio.gather()`** for concurrent scoring
+- Divergence stats: rate, delta, shadow-higher count
+
+### 🔑 Cryptographic Key Rotation & Tokenization
+- **Format-preserving tokenization** (HMAC-SHA256, stable tokens)
+- **Versioned key store** with `MultiFernet` — decrypt with any historical key
+- **Key rotation** generates new key, retains old for backward compatibility
+- **Role-gated detokenization** — only admin/analyst can reverse tokens
+- **Supabase pgcrypto schema** — SQL for server-side `pgp_sym_encrypt` column encryption
+- Token vault persisted locally with encrypted originals
+
+### 🔒 Security & Compliance
+- **RBAC** — Admin / Analyst / Viewer with granular permissions
+- **Data Validation Layer** — schema + business rule checks
+- **API Rate Limiting** — per-role throttling via slowapi
+- **PII Masking** — automatic redaction in UI
+- **Automated SAR Generation** — FinCEN-style reports with ML justification
+
+### 🏦 Financial Intelligence
+- **Dynamic Cost-Benefit Optimizer** — threshold sweep maximizing net impact
+- **Fraud Savings Tracker** — cumulative savings with ROI projections
+- **Business Cost Analysis** — FP/FN cost modeling
+- **ROI Calculator** — monthly/annual projections from deployment
+
+### 🚀 MLOps
+- **Automated Retraining Pipeline** — drift-triggered with webhook notifications
+- **Model Drift Detection** — PSI-based with retrain recommendations
+- **Model Versioning** — timestamped artifacts, keep last 3
+- **Audit Logging** — Supabase-backed full prediction history
+
+---
+
+## 📊 Dashboard — 13 Tabs
+
+| Tab | Features |
+|-----|----------|
+| 📊 **Explorer** | EDA — distributions, fraud-by-hour, channel analysis, velocity heatmap |
+| 🏋️ **Train** | XGBoost + LightGBM ensemble, Optuna tuning, calibrated probabilities, 3-fold CV |
+| 📈 **Metrics** | ROC/PR curves, confusion matrix, threshold analysis, business cost/savings |
+| 🔍 **Explainability** | SHAP global bar, beeswarm, dependence plots, per-prediction waterfall |
+| 📡 **Drift** | PSI-based feature drift with retrain recommendations |
+| ⚡ **Predict** | Real-time scoring with fraud gauge, validation warnings, auto-HITL queue |
+| 🔴 **Live Stream** | Start/stop live transaction feed with real-time Plotly chart |
+| 👤 **HITL** | Human-in-the-loop analyst review queue |
+| 🗂️ **Audit** | Supabase-backed prediction log with rolling fraud rate |
+| 🕸️ **Graph Intel** | Fraud ring detector, network visualization, graph feature distributions |
+| 🔑 **Vault** | Key rotation, tokenize/detokenize PII, pgcrypto SQL schema |
+| 💰 **Savings** | Cumulative savings tracker, threshold optimizer, ROI calculator |
+| 📋 **SAR** | SAR report management — review, file, dismiss |
+
+---
+
+## 🛠️ Tech Stack
+
+**ML/AI:** `XGBoost` · `LightGBM` · `SHAP` · `scikit-learn` · `Optuna` · `Groq (Llama-3)`
+**Graph:** `NetworkX` — bipartite graphs, centrality, community detection
+**Backend:** `FastAPI` · `asyncio` · `BackgroundTasks` · `Pydantic` · `slowapi`
+**Security:** `cryptography (Fernet/MultiFernet)` · `HMAC-SHA256` · `pgcrypto`
+**Frontend:** `Streamlit` · `Plotly` · `Seaborn`
+**Data:** `Pandas` · `NumPy` · `Supabase`
+**DevOps:** `Docker` · `GitHub Actions` · `pytest`
+
+---
+
+## 🚀 Quick Start
+
+```bash
+git clone https://github.com/SumedhPatil1507/fraud_detection_project.git
+cd fraud_detection_project
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+API (separate terminal):
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+Docker:
+```bash
+docker-compose up
+```
+
+---
+
+## 🔐 API — v3.0 Endpoints
+
+```bash
+# Async predict with parallel shadow scoring
+curl -X POST http://localhost:8000/predict \
+  -H "X-API-Key: analyst-dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_amount": 1500, "distance_from_home_km": 300,
+       "hour": 2, "customer_id": "CUST_001", "merchant_id": "MERCH_042"}'
+
+# Fraud ring detection results
+curl http://localhost:8000/graph/rings -H "X-API-Key: analyst-dev-key"
+
+# Key vault summary (admin only)
+curl http://localhost:8000/vault/keys -H "X-API-Key: admin-dev-key"
+
+# Rotate encryption keys (admin only)
+curl -X POST http://localhost:8000/vault/rotate -H "X-API-Key: admin-dev-key"
+
+# Generate SAR
+curl -X POST http://localhost:8000/sar/generate \
+  -H "X-API-Key: analyst-dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_amount": 5000, "distance_from_home_km": 500}'
+```
+
+**Swagger UI:** `http://localhost:8000/docs`
+
+---
+
+## 🔧 Environment Variables
+
+```bash
+# Security
+ENCRYPTION_KEY="your-fernet-key"
+TOKEN_SECRET="your-hmac-secret"
+API_KEY_ADMIN="admin-key"
+API_KEY_ANALYST="analyst-key"
+API_KEY_VIEWER="viewer-key"
+
+# Database
+SUPABASE_URL="https://xxxx.supabase.co"
+SUPABASE_KEY="your-anon-key"
+
+# LLM
+GROQ_API_KEY="gsk_xxxx"
+
+# MLOps
+RETRAIN_WEBHOOK_URL="https://hooks.slack.com/xxx"
+INSTITUTION_NAME="Your Bank Name"
+```
+
+### Streamlit Cloud Secrets
+
+```toml
+APP_PASSWORD = "your_password"
+SUPABASE_URL = "https://xxxx.supabase.co"
+SUPABASE_KEY = "your-anon-key"
+GROQ_API_KEY = "gsk_xxxx"
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+pytest                          # all tests
+pytest --cov=src --cov-report=html  # with coverage
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Streamlit UI (13 tabs)                  │
+│  Explorer · Train · Metrics · SHAP · Drift · Predict    │
+│  Live · HITL · Audit · Graph · Vault · Savings · SAR    │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────┐
+│              FastAPI v3.0 (async)                        │
+│  /predict (asyncio.gather) · /predict/batch             │
+│  /graph/rings · /vault/keys · /vault/rotate             │
+│  /sar/generate · /shadow/stats · /savings               │
+└──────┬──────────────┬──────────────┬────────────────────┘
+       │              │              │
+┌──────▼──────┐ ┌─────▼──────┐ ┌────▼────────────────────┐
+│  ML Engine  │ │   Graph    │ │   Security Layer         │
+│  XGBoost   │ │ NetworkX   │ │  Fernet · MultiFernet    │
+│  LightGBM  │ │ Bipartite  │ │  HMAC Tokenization       │
+│  SHAP      │ │ Ring Detect│ │  RBAC · Rate Limiting    │
+│  Optuna    │ │ Centrality │ │  pgcrypto Schema         │
+└──────┬──────┘ └─────┬──────┘ └────┬────────────────────┘
+       │              │              │
+┌──────▼──────────────▼──────────────▼────────────────────┐
+│                  Data Layer                              │
+│  Supabase (predictions) · CSV fallback                  │
+│  Token Vault · Key Store · SAR Reports · Ring Log       │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE)
+
+---
+
+## 🎓 Built by a College Student
+
+This system demonstrates **senior ML engineer** level skills:
+
+✅ Graph neural network-style features via NetworkX  
+✅ True async parallelism with asyncio + ThreadPoolExecutor  
+✅ Cryptographic tokenization with key rotation  
+✅ FinCEN-compliant SAR generation  
+✅ Production FastAPI with BackgroundTasks  
+✅ Full-stack: API + UI + ML + Security + DevOps  
+✅ 13-tab Streamlit dashboard  
+✅ Comprehensive test suite  
+
+**Contact:** [@SumedhPatil1507](https://github.com/SumedhPatil1507)
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
 ![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)

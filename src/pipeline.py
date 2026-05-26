@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from src.config import DATA_PATH, SAMPLE_PATH
+from src.graph_intelligence import extract_graph_features
 
 try:
     import networkx as nx
@@ -57,32 +58,23 @@ def feature_engineering(df):
     return df
 
 
-def graph_features(df_raw):
-    if not _NX_AVAILABLE:
-        return pd.DataFrame(index=df_raw.index)
-    if 'customer_id' not in df_raw.columns or 'merchant_id' not in df_raw.columns:
-        return pd.DataFrame(index=df_raw.index)
-    G = nx.Graph()
-    for _, row in df_raw[['customer_id', 'merchant_id']].iterrows():
-        G.add_edge(f"c_{row['customer_id']}", f"m_{row['merchant_id']}")
-    degree = dict(G.degree())
-    df_raw = df_raw.copy()
-    df_raw['customer_degree'] = df_raw['customer_id'].apply(lambda x: degree.get(f"c_{x}", 0))
-    df_raw['merchant_degree'] = df_raw['merchant_id'].apply(lambda x: degree.get(f"m_{x}", 0))
-    df_raw['graph_risk_score'] = (df_raw['customer_degree'] * df_raw['merchant_degree']).apply(np.log1p)
-    return df_raw[['customer_degree', 'merchant_degree', 'graph_risk_score']]
-
-
 def run_pipeline(uploaded_file=None, raw_df=None):
     if raw_df is not None:
         df_raw = raw_df
         source = "uploaded"
     else:
         df_raw, source = load_data(uploaded_file)
-    graph_feats = graph_features(df_raw)
+
+    # Rich graph features: degree, betweenness, fraud_rate, ring_member
+    graph_feats = extract_graph_features(df_raw)
+
     df = preprocess(df_raw)
     df = feature_engineering(df)
+
     if not graph_feats.empty:
         df = pd.concat([df.reset_index(drop=True),
                         graph_feats.reset_index(drop=True)], axis=1)
+        # Drop duplicate columns if any
+        df = df.loc[:, ~df.columns.duplicated()]
+
     return df, source

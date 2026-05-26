@@ -21,3 +21,5 @@ pydantic
 cryptography
 slowapi
 groq
+lightgbm
+optuna

@@ -10,21 +10,27 @@ import plotly.graph_objects as go
 from src.pipeline import run_pipeline
 from src.model import train_model
 from src.business import compute_business_cost
-from src.drift import detect_drift, plot_drift
+from src.drift import detect_drift
 from src.simulator import generate_batch, score_transaction
 from src.pii import mask_pii
 from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
 from src.database import log_prediction, load_predictions, get_stats
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
+from src.graph_intelligence import detect_fraud_rings, plot_fraud_ring_network, load_ring_log
+from src.tokenizer import (tokenize, detokenize, rotate_keys,
+                            get_key_store_summary, tokenize_dataframe)
+from src.optimizer import optimize_threshold, roi_projection
+from src.savings_tracker import get_savings_summary, load_savings_log
+from src.shadow import shadow_predict, shadow_divergence_stats, load_shadow_log
+from src.sar import load_sar_reports, update_sar_status
 
-# Inline stream_one to avoid import issues on cloud
 def stream_one(fraud_rate=0.2, seed=None):
     from src.simulator import generate_transaction
-    import numpy as np
     rng = np.random.default_rng(seed)
     is_fraud = rng.random() < fraud_rate
     return generate_transaction(rng, fraud=is_fraud)
+
 from src.plots import (
     plot_class_distribution, plot_amount_distribution, plot_amount_box,
     plot_correlation_heatmap, plot_roc_curve, plot_precision_recall,
@@ -33,18 +39,18 @@ from src.plots import (
     plot_scatter_risk, plot_anomaly_scatter, plot_shap_bar_interactive,
 )
 
-st.set_page_config(page_title="Fraud Detection", layout="wide", page_icon="🚨")
+st.set_page_config(page_title="FraudGuard AI", layout="wide", page_icon="🚨")
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 [data-testid="metric-container"] { background:#1e1e2e; border-radius:8px; padding:12px; }
-.stTabs [data-baseweb="tab"] { font-size:13px; font-weight:600; }
+.stTabs [data-baseweb="tab"] { font-size:12px; font-weight:600; }
+.stTabs [data-baseweb="tab-list"] { gap: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 Enterprise Fraud Detection System")
-st.caption("XGBoost · LightGBM · SHAP · Drift Detection · HITL · Live Simulation")
+st.title("🚨 FraudGuard AI — Enterprise Edition v3.0")
+st.caption("XGBoost · LightGBM · Graph Intelligence · Shadow Mode · Tokenization · SAR · HITL")
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Data Source")
@@ -94,9 +100,11 @@ st.sidebar.metric("Features", df.shape[1] - 1)
 tabs = st.tabs([
     "📊 Explorer", "🏋️ Train", "📈 Metrics",
     "🔍 Explainability", "📡 Drift", "⚡ Predict",
-    "🔴 Live Stream", "👤 HITL", "🗂️ Audit"
+    "🔴 Live Stream", "👤 HITL", "🗂️ Audit",
+    "🕸️ Graph Intel", "🔑 Vault", "💰 Savings", "📋 SAR"
 ])
-tab_data, tab_train, tab_metrics, tab_shap, tab_drift, tab_predict, tab_live, tab_hitl, tab_audit = tabs
+(tab_data, tab_train, tab_metrics, tab_shap, tab_drift, tab_predict,
+ tab_live, tab_hitl, tab_audit, tab_graph, tab_vault, tab_savings, tab_sar) = tabs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DATA EXPLORER
@@ -647,3 +655,291 @@ with tab_audit:
         st.caption(f"Auto-refreshing every {refresh_interval}s...")
         time.sleep(refresh_interval)
         st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — GRAPH INTELLIGENCE & FRAUD RING DETECTOR
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_graph:
+    st.subheader("🕸️ Graph Intelligence — Fraud Ring Detector")
+    st.markdown(
+        "Builds a **customer ↔ merchant bipartite graph** using NetworkX. "
+        "Detects fraud rings via connected-component analysis, betweenness centrality, "
+        "and subgraph fraud-rate thresholding."
+    )
+
+    c1, c2 = st.columns(2)
+    min_fraud_rate = c1.slider("Min ring fraud rate", 0.1, 0.9, 0.3, 0.05)
+    min_ring_size  = c2.slider("Min ring size (nodes)", 2, 10, 3)
+
+    if st.button("🔍 Detect Fraud Rings", type="primary"):
+        with st.spinner("Building transaction graph and detecting rings..."):
+            rings = detect_fraud_rings(df, min_fraud_rate=min_fraud_rate,
+                                        min_ring_size=min_ring_size)
+
+        if not rings:
+            st.info("No fraud rings detected at current thresholds.")
+        else:
+            st.success(f"🚨 {len(rings)} fraud ring(s) detected!")
+
+            # Summary metrics
+            total_amount = sum(r["total_amount"] for r in rings)
+            avg_fraud_rate = np.mean([r["fraud_rate"] for r in rings])
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Rings Detected", len(rings))
+            c2.metric("Total Exposure", f"${total_amount:,.0f}")
+            c3.metric("Avg Fraud Rate", f"{avg_fraud_rate:.1%}")
+            c4.metric("Largest Ring", max(r["size"] for r in rings))
+
+            # Network visualization
+            fig_net = plot_fraud_ring_network(rings, max_rings=5)
+            if fig_net:
+                st.plotly_chart(fig_net, use_container_width=True)
+
+            # Ring details table
+            ring_df = pd.DataFrame([{
+                "Ring ID":       r["ring_id"],
+                "Size":          r["size"],
+                "Customers":     r["customer_count"],
+                "Merchants":     r["merchant_count"],
+                "Fraud Rate":    f"{r['fraud_rate']:.1%}",
+                "Total Amount":  f"${r['total_amount']:,.0f}",
+                "Fraud Txns":    r["total_fraud_txn"],
+                "Risk Level":    r["risk_level"],
+                "Hub Nodes":     ", ".join(r["hub_nodes"][:2]),
+            } for r in rings])
+            st.dataframe(ring_df, use_container_width=True)
+
+            # Graph feature distribution
+            graph_cols = [c for c in df.columns if c in
+                          ["graph_risk_score", "customer_degree", "merchant_degree",
+                           "customer_fraud_rate", "merchant_fraud_rate",
+                           "customer_betweenness", "ring_member"]]
+            if graph_cols:
+                st.subheader("Graph Feature Distributions")
+                c1, c2 = st.columns(2)
+                if "graph_risk_score" in df.columns:
+                    fig_gr = px.histogram(df, x="graph_risk_score", color="label",
+                                          nbins=50, title="Graph Risk Score Distribution",
+                                          color_discrete_map={0: "#2ecc71", 1: "#e74c3c"},
+                                          barmode="overlay", opacity=0.7)
+                    c1.plotly_chart(fig_gr, use_container_width=True)
+                if "ring_member" in df.columns:
+                    ring_fraud = df.groupby("ring_member")["label"].mean().reset_index()
+                    ring_fraud.columns = ["Ring Member", "Fraud Rate"]
+                    ring_fraud["Ring Member"] = ring_fraud["Ring Member"].map({0: "Non-Ring", 1: "Ring Member"})
+                    fig_rm = px.bar(ring_fraud, x="Ring Member", y="Fraud Rate",
+                                    color="Ring Member", title="Fraud Rate: Ring vs Non-Ring",
+                                    color_discrete_map={"Ring Member": "#e74c3c", "Non-Ring": "#2ecc71"})
+                    c2.plotly_chart(fig_rm, use_container_width=True)
+
+    # Show previously detected rings
+    existing_rings = load_ring_log()
+    if existing_rings and not st.session_state.get("rings_just_run"):
+        with st.expander(f"📂 Last Detected Rings ({len(existing_rings)} rings)", expanded=False):
+            st.json(existing_rings[:3])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 11 — VAULT & TOKENIZATION
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_vault:
+    st.subheader("🔑 Cryptographic Vault & Tokenization Engine")
+    st.markdown(
+        "Format-preserving tokenization for PII fields. "
+        "Versioned key rotation with MultiFernet. "
+        "Role-gated detokenization — only admin/analyst can reverse tokens."
+    )
+
+    # Key store status
+    key_summary = get_key_store_summary()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Key Versions", key_summary["total_keys"])
+    c2.metric("Active Version", key_summary["active_version"] or "None")
+    c3.metric("Status", "🟢 Active" if key_summary["active_version"] else "🔴 No Key")
+
+    if key_summary["keys"]:
+        key_df = pd.DataFrame(key_summary["keys"])
+        st.dataframe(key_df, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Rotate Keys", type="primary"):
+            result = rotate_keys()
+            st.success(f"✅ Key rotated → Version {result['new_version']}")
+            st.json(result)
+
+    with col2:
+        if st.button("🔑 Initialize Keys (first run)"):
+            from src.tokenizer import generate_key
+            k = generate_key(purpose="init")
+            st.success(f"✅ Key v{k['version']} generated")
+
+    st.divider()
+    st.subheader("🔐 Tokenize / Detokenize PII")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Tokenize a value**")
+        tok_field = st.selectbox("Field", ["customer_id", "merchant_id", "device_id"])
+        tok_value = st.text_input("Plaintext value", placeholder="e.g. CUST_12345")
+        if st.button("Tokenize"):
+            if tok_value:
+                token = tokenize(tok_value, tok_field)
+                st.code(token)
+                st.caption("Token stored in vault. Original encrypted with active key.")
+
+    with col2:
+        st.markdown("**Detokenize (role-gated)**")
+        detok_token = st.text_input("Token", placeholder="TKN_CU_XXXX")
+        detok_role  = st.selectbox("Your role", ["admin", "analyst", "viewer"])
+        if st.button("Detokenize"):
+            if detok_token:
+                result = detokenize(detok_token, detok_role)
+                if "REDACTED" in result or "FAILED" in result or "NOT_FOUND" in result:
+                    st.error(result)
+                else:
+                    st.success(f"Plaintext: `{result}`")
+
+    st.divider()
+    st.subheader("📋 Supabase pgcrypto Schema")
+    st.caption("Copy this SQL into your Supabase SQL editor to enable server-side encryption.")
+    from src.tokenizer import get_pgcrypto_schema
+    st.code(get_pgcrypto_schema(), language="sql")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 12 — SAVINGS & ROI OPTIMIZER
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_savings:
+    st.subheader("💰 Fraud Savings Tracker & ROI Optimizer")
+
+    # Live savings summary
+    summary = get_savings_summary()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Fraud Caught", summary["total_caught"])
+    c2.metric("Total Savings", f"${summary['total_savings_usd']:,.0f}")
+    c3.metric("Confirmed Savings", f"${summary['confirmed_savings_usd']:,.0f}")
+    c4.metric("Avg Fraud Amount", f"${summary['avg_fraud_amount']:,.0f}")
+
+    savings_df = load_savings_log()
+    if not savings_df.empty:
+        savings_df["timestamp"] = pd.to_datetime(savings_df["timestamp"])
+        savings_df["cumulative_savings"] = savings_df["estimated_saving_usd"].cumsum()
+        fig_sav = px.area(savings_df, x="timestamp", y="cumulative_savings",
+                          title="Cumulative Fraud Savings Over Time",
+                          labels={"cumulative_savings": "Cumulative Savings ($)"},
+                          color_discrete_sequence=["#2ecc71"])
+        st.plotly_chart(fig_sav, use_container_width=True)
+
+    st.divider()
+    st.subheader("🎯 Dynamic Threshold Optimizer")
+    if "probs" in st.session_state:
+        y_test = st.session_state.y_test
+        probs  = st.session_state.probs
+        opt_result = optimize_threshold(
+            np.array(y_test), np.array(probs), fn_cost=fn_cost, fp_cost=fp_cost
+        )
+        sweep = opt_result["sweep_df"]
+        opt_t = opt_result["optimal_threshold"]
+
+        c1, c2 = st.columns(2)
+        c1.metric("Optimal Threshold", f"{opt_t:.3f}")
+        c2.metric("Max Net Impact", f"${opt_result['max_net_impact_usd']:,.0f}")
+
+        fig_opt = px.line(sweep, x="threshold", y="net_impact_usd",
+                          title="Net Impact vs Threshold",
+                          labels={"net_impact_usd": "Net Impact ($)", "threshold": "Threshold"})
+        fig_opt.add_vline(x=opt_t, line_dash="dash", line_color="gold",
+                          annotation_text=f"Optimal: {opt_t:.3f}")
+        fig_opt.add_hline(y=0, line_dash="dot", line_color="red")
+        st.plotly_chart(fig_opt, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        fig_pr = px.line(sweep, x="threshold", y=["precision", "recall", "f1"],
+                         title="Precision / Recall / F1 vs Threshold")
+        c1.plotly_chart(fig_pr, use_container_width=True)
+        fig_cost = px.line(sweep, x="threshold", y=["savings_usd", "cost_usd"],
+                           title="Savings vs Cost vs Threshold",
+                           color_discrete_map={"savings_usd": "#2ecc71", "cost_usd": "#e74c3c"})
+        c2.plotly_chart(fig_cost, use_container_width=True)
+    else:
+        st.info("Train the model first to run threshold optimization.")
+
+    st.divider()
+    st.subheader("📈 ROI Projection Calculator")
+    c1, c2, c3 = st.columns(3)
+    daily_txns    = c1.number_input("Daily Transactions", value=10000, step=1000)
+    fraud_rate_pct = c2.slider("Fraud Rate (%)", 0.1, 10.0, 2.0, 0.1)
+    avg_fraud_amt = c3.number_input("Avg Fraud Amount ($)", value=2000, step=100)
+    c4, c5, c6 = st.columns(3)
+    det_rate  = c4.slider("Detection Rate", 0.5, 1.0, 0.85, 0.01)
+    fp_rate_p = c5.slider("False Positive Rate", 0.001, 0.05, 0.01, 0.001)
+    proj_months = c6.slider("Projection (months)", 1, 24, 12)
+
+    roi = roi_projection(
+        daily_transactions=int(daily_txns),
+        fraud_rate=fraud_rate_pct / 100,
+        avg_fraud_amount=avg_fraud_amt,
+        detection_rate=det_rate,
+        fp_rate=fp_rate_p,
+        fp_cost=fp_cost,
+        months=proj_months,
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Monthly Net Savings", f"${roi['monthly_net_usd']:,.0f}")
+    c2.metric(f"{proj_months}-Month ROI", f"${roi['annual_net_usd']:,.0f}")
+    c3.metric("Daily Fraud Caught", f"{roi['daily_fraud_caught']:.0f}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 13 — SAR MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sar:
+    st.subheader("📋 SAR Report Management")
+    st.markdown("Automated Suspicious Activity Reports — FinCEN-style with ML justification.")
+
+    reports = load_sar_reports()
+    if not reports:
+        st.info("No SAR reports generated yet. Flag a transaction in the Predict tab.")
+    else:
+        # Summary
+        statuses = [r.get("status", "DRAFT") for r in reports]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total SARs", len(reports))
+        c2.metric("Draft", statuses.count("DRAFT"))
+        c3.metric("Filed", statuses.count("FILED"))
+        c4.metric("Reviewed", statuses.count("REVIEWED"))
+
+        # Status filter
+        status_filter = st.selectbox("Filter by status", ["All", "DRAFT", "REVIEWED", "FILED"])
+        filtered = reports if status_filter == "All" else [
+            r for r in reports if r.get("status") == status_filter
+        ]
+
+        for sar in filtered[:20]:
+            txn = sar.get("transaction", {})
+            ml  = sar.get("ml_assessment", {})
+            with st.expander(
+                f"📄 {sar['sar_id']} | ${txn.get('amount_usd', 0):,.0f} | "
+                f"Prob: {ml.get('fraud_probability', 0):.1%} | {sar.get('status', 'DRAFT')}"
+            ):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Amount", f"${txn.get('amount_usd', 0):,.0f}")
+                c2.metric("Fraud Prob", f"{ml.get('fraud_probability', 0):.1%}")
+                c3.metric("Risk Level", ml.get("risk_level", "N/A"))
+
+                st.markdown(f"**Narrative:** {sar.get('narrative', '')}")
+                st.markdown(f"**Recommended Action:** {sar.get('recommended_action', '')}")
+
+                if sar.get("risk_indicators"):
+                    st.markdown("**Risk Indicators:** " + " · ".join(sar["risk_indicators"]))
+
+                col1, col2, col3 = st.columns(3)
+                notes = st.text_input("Analyst notes", key=f"notes_{sar['sar_id']}")
+                if col1.button("✅ Mark Reviewed", key=f"rev_{sar['sar_id']}"):
+                    update_sar_status(sar["sar_id"], "REVIEWED", notes)
+                    st.rerun()
+                if col2.button("📤 Mark Filed", key=f"file_{sar['sar_id']}"):
+                    update_sar_status(sar["sar_id"], "FILED", notes)
+                    st.rerun()
+                if col3.button("🗑 Dismiss", key=f"dis_{sar['sar_id']}"):
+                    update_sar_status(sar["sar_id"], "DISMISSED", notes)
+                    st.rerun()
+
