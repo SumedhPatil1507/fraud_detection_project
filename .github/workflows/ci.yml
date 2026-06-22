@@ -17,8 +17,55 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install core dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy scikit-learn xgboost lightgbm shap networkx \
+                      cryptography pydantic fastapi httpx requests sqlalchemy asyncpg \
+                      plotly streamlit pytest pytest-cov
+
+      - name: Syntax check all modules
+        run: |
+          python -c "
+          import ast, os
+          errs = []
+          for root, dirs, files in os.walk('src'):
+              dirs[:] = [d for d in dirs if d != '__pycache__']
+              for f in files:
+                  if not f.endswith('.py'): continue
+                  p = os.path.join(root, f)
+                  try:
+                      ast.parse(open(p, encoding='utf-8').read())
+                  except SyntaxError as e:
+                      errs.append(f'{p}:{e.lineno}: {e.msg}')
+          if errs:
+              raise SystemExit('Syntax errors:\n' + '\n'.join(errs))
+          print('All syntax clean')
+          "
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --tb=short
+
+      - name: Import smoke test
+        run: |
+          python -c "
+          from src.config import MODEL_PATH
+          from src.business import compute_business_cost
+          from src.validation import validate_transaction
+          from src.rbac import Role, has_permission
+          from src.optimizer import optimize_threshold
+          from src.compliance import run_full_compliance
+          from src.observability import get_live_metrics
+          from src.graph_intelligence import detect_fraud_rings
+          from src.graph_neo4j import get_graph_adapter
+          from src.object_store import get_registry_summary
+          from src.task_queue import get_queue_stats
+          from src.db_async import log_prediction
+          print('All imports OK')
+          "

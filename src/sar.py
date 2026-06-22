@@ -1,4 +1,4 @@
-﻿"""
+"""
 Automated SAR (Suspicious Activity Report) Generation
 Generates FinCEN-style SAR reports as structured JSON.
 """

@@ -17,13 +17,17 @@ from src.hitl import add_to_review_queue, render_hitl_tab
 from src.ingest import read_uploaded_file, validate_dataframe
 from src.database import log_prediction, load_predictions, get_stats
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
-from src.graph_intelligence import detect_fraud_rings, plot_fraud_ring_network, load_ring_log
+from src.graph_neo4j import detect_fraud_rings, plot_fraud_ring_network, load_ring_log
 from src.tokenizer import (tokenize, detokenize, rotate_keys,
                             get_key_store_summary, tokenize_dataframe)
 from src.optimizer import optimize_threshold, roi_projection
 from src.savings_tracker import get_savings_summary, load_savings_log
 from src.shadow import shadow_predict, shadow_divergence_stats, load_shadow_log
 from src.sar import load_sar_reports, update_sar_status
+from src.observability import get_live_metrics, compute_live_psi
+from src.compliance import run_full_compliance, load_compliance_report
+from src.task_queue import submit_retrain, submit_drift_check, get_queue_stats
+from src.object_store import get_registry_summary
 
 def stream_one(fraud_rate=0.2, seed=None):
     from src.simulator import generate_transaction
@@ -49,8 +53,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 FraudGuard AI — Enterprise Edition v3.0")
-st.caption("XGBoost · LightGBM · Graph Intelligence · Shadow Mode · Tokenization · SAR · HITL")
+st.title("🚨 FraudGuard AI — Enterprise Edition v4.0")
+st.caption("XGBoost · LightGBM · Neo4j Graph · Async PostgreSQL · Celery · S3 · Prometheus · DPDP/RBI Compliance")
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Data Source")
@@ -101,10 +105,12 @@ tabs = st.tabs([
     "📊 Explorer", "🏋️ Train", "📈 Metrics",
     "🔍 Explainability", "📡 Drift", "⚡ Predict",
     "🔴 Live Stream", "👤 HITL", "🗂️ Audit",
-    "🕸️ Graph Intel", "🔑 Vault", "💰 Savings", "📋 SAR"
+    "🕸️ Graph Intel", "🔑 Vault", "💰 Savings", "📋 SAR",
+    "📡 Observability", "⚖️ Compliance"
 ])
 (tab_data, tab_train, tab_metrics, tab_shap, tab_drift, tab_predict,
- tab_live, tab_hitl, tab_audit, tab_graph, tab_vault, tab_savings, tab_sar) = tabs
+ tab_live, tab_hitl, tab_audit, tab_graph, tab_vault, tab_savings,
+ tab_sar, tab_obs, tab_compliance) = tabs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DATA EXPLORER
@@ -945,3 +951,196 @@ with tab_sar:
                     update_sar_status(sar["sar_id"], "DISMISSED", notes)
                     st.rerun()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 14 — OBSERVABILITY
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_obs:
+    st.subheader("📡 Infrastructure Observability")
+    st.caption("Prometheus-ready metrics · Live PSI · TP/FP monitoring · Queue depth · DB pool")
+
+    # ── Live model metrics ─────────────────────────────────────────────────────
+    audit_df_obs = load_predictions(500)
+    metrics_live = get_live_metrics(audit_df_obs)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Predictions", f"{metrics_live['total_predictions']:,}")
+    c2.metric("Live Fraud Rate",   f"{metrics_live['fraud_rate']:.2%}")
+    c3.metric("Avg Probability",   f"{metrics_live['avg_probability']:.3f}")
+    c4.metric("p95 Score",         f"{metrics_live['p95_probability']:.3f}")
+    c5.metric("p99 Score",         f"{metrics_live['p99_probability']:.3f}")
+
+    col1, col2 = st.columns(2)
+
+    # ── Probability distribution ───────────────────────────────────────────────
+    if not audit_df_obs.empty and "fraud_probability" in audit_df_obs.columns:
+        with col1:
+            fig_dist = px.histogram(
+                audit_df_obs, x="fraud_probability",
+                color="is_fraud" if "is_fraud" in audit_df_obs.columns else None,
+                nbins=50, title="Live Fraud Score Distribution",
+                color_discrete_map={True: "#e74c3c", False: "#2ecc71"},
+                barmode="overlay", opacity=0.75,
+                labels={"fraud_probability": "Fraud Probability"}
+            )
+            fig_dist.add_vline(x=0.95, line_dash="dash", line_color="red",
+                               annotation_text="p95")
+            fig_dist.add_vline(x=0.99, line_dash="dot", line_color="orange",
+                               annotation_text="p99")
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+        with col2:
+            if "timestamp" in audit_df_obs.columns:
+                audit_df_obs["timestamp"] = pd.to_datetime(audit_df_obs["timestamp"])
+                audit_df_obs_s = audit_df_obs.sort_values("timestamp")
+                audit_df_obs_s["rolling_fr"] = (
+                    audit_df_obs_s["is_fraud"].astype(float)
+                    .rolling(10, min_periods=1).mean() * 100
+                )
+                fig_roll = px.line(audit_df_obs_s, x="timestamp", y="rolling_fr",
+                                   title="Rolling Fraud Rate (10-prediction window)",
+                                   labels={"rolling_fr": "Fraud Rate (%)"})
+                st.plotly_chart(fig_roll, use_container_width=True)
+
+    st.divider()
+
+    # ── Drift (PSI) live ───────────────────────────────────────────────────────
+    st.subheader("Live PSI Drift Tracking")
+    if st.button("Refresh PSI", key="obs_psi"):
+        X_num = df.select_dtypes(include="number").drop(
+            columns=["label", "financial_loss"], errors="ignore")
+        from src.drift import detect_drift as _detect
+        dr = _detect(X_num)
+        from src.observability import update_psi_metrics
+        update_psi_metrics(dr)
+        if "top_drifted_features" in dr:
+            psi_data = compute_live_psi(audit_df_obs, dr)
+            fig_psi = px.bar(
+                x=psi_data["features"], y=psi_data["psi_values"],
+                title=f"PSI per Feature — Overall: {psi_data['overall_psi']:.4f} ({psi_data['drift_level']})",
+                labels={"x": "Feature", "y": "PSI"},
+                color=psi_data["psi_values"],
+                color_continuous_scale=["#2ecc71", "#e67e22", "#e74c3c"],
+            )
+            fig_psi.add_hline(y=0.1, line_dash="dash", line_color="orange", annotation_text="Moderate")
+            fig_psi.add_hline(y=0.2, line_dash="dash", line_color="red", annotation_text="High")
+            st.plotly_chart(fig_psi, use_container_width=True)
+
+    st.divider()
+
+    # ── Task queue stats ───────────────────────────────────────────────────────
+    st.subheader("Task Queue (Celery + Redis)")
+    q_stats = get_queue_stats()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Celery Available", "✅" if q_stats.get("celery_available") else "❌ (sync mode)")
+    c2.metric("Active Tasks",  q_stats.get("active_tasks", "—"))
+    c3.metric("Queued Tasks",  q_stats.get("queued_tasks", "—"))
+    st.caption(f"Redis: `{q_stats.get('redis_url', 'not configured')}`")
+
+    col1, col2 = st.columns(2)
+    if col1.button("🔄 Trigger Retraining", key="obs_retrain"):
+        result = submit_retrain(reason="manual_ui")
+        st.json(result)
+    if col2.button("📊 Trigger Drift Check", key="obs_drift"):
+        result = submit_drift_check()
+        st.json(result)
+
+    st.divider()
+
+    # ── Object store registry ──────────────────────────────────────────────────
+    st.subheader("Object Store — Artifact Registry")
+    reg = get_registry_summary()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Artifacts",  reg.get("total_artifacts", 0))
+    c2.metric("Backend",    reg.get("backend", "local").upper())
+    c3.metric("Bucket",     reg.get("bucket", "local"))
+    if reg.get("artifacts"):
+        st.dataframe(pd.DataFrame(reg["artifacts"]), use_container_width=True)
+
+    st.divider()
+
+    # ── Grafana dashboard snippet ──────────────────────────────────────────────
+    with st.expander("📋 Grafana Dashboard JSON (copy to Grafana Import)"):
+        from src.observability import GRAFANA_DASHBOARD_JSON
+        st.json(GRAFANA_DASHBOARD_JSON)
+
+    st.caption(
+        "To enable Prometheus metrics: `pip install prometheus-client` and set "
+        "`PROMETHEUS_PORT=9090`. Scrape endpoint: `http://api-host:9090/metrics`"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 15 — COMPLIANCE
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_compliance:
+    st.subheader("⚖️ Compliance Mapping & Regulatory Verification")
+    st.markdown(
+        "Automated checks against **DPDP Act 2023** (India) and **RBI IT Framework**. "
+        "Each control is evaluated against current deployment configuration."
+    )
+
+    if st.button("🔍 Run Compliance Audit", type="primary"):
+        with st.spinner("Running compliance checks..."):
+            report = run_full_compliance()
+        st.session_state["compliance_report"] = report
+
+    report = st.session_state.get("compliance_report") or load_compliance_report()
+
+    if report:
+        summary = report.get("summary", {})
+        score = summary.get("score", 0)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Compliance Score", f"{score:.0f}%")
+        c2.metric("Total Controls", summary.get("total", 0))
+        c3.metric("✅ Pass", summary.get("pass", 0))
+        c4.metric("⚠️ Warn", summary.get("warn", 0))
+        c5.metric("❌ Fail", summary.get("fail", 0))
+
+        # Score gauge
+        fig_score = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=score,
+            title={"text": "Compliance Score"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"color": "#2ecc71" if score >= 70 else "#e67e22" if score >= 50 else "#e74c3c"},
+                "steps": [
+                    {"range": [0, 50],  "color": "#fadbd8"},
+                    {"range": [50, 75], "color": "#fdebd0"},
+                    {"range": [75, 100],"color": "#d5f5e3"},
+                ],
+            }
+        ))
+        fig_score.update_layout(height=250)
+        st.plotly_chart(fig_score, use_container_width=True)
+
+        # Framework breakdown
+        for framework, controls in report.get("frameworks", {}).items():
+            st.subheader(f"📋 {framework}")
+            for ctrl in controls:
+                status = ctrl["status"]
+                icon = {"PASS": "✅", "WARN": "⚠️", "FAIL": "❌", "NA": "ℹ️"}.get(status, "")
+                color = {"PASS": "success", "WARN": "warning", "FAIL": "error", "NA": "info"}.get(status, "info")
+                with st.expander(f"{icon} {ctrl['control_id']} — {ctrl['title']} [{status}]"):
+                    st.markdown(f"**Evidence:** {ctrl['evidence']}")
+                    if ctrl.get("remediation"):
+                        st.markdown(f"**Remediation:** {ctrl['remediation']}")
+                    st.caption(f"Checked: {ctrl.get('checked_at', '')[:19]}")
+    else:
+        st.info("Click 'Run Compliance Audit' to generate the report.")
+
+    with st.expander("📖 Regulatory References"):
+        st.markdown("""
+**DPDP Act 2023** — Digital Personal Data Protection Act, India
+- Ministry of Electronics & IT: https://www.meity.gov.in/data-protection-framework
+- Applies to: Any entity processing digital personal data of Indian residents
+
+**RBI IT Framework** — Reserve Bank of India IT Framework for Banks
+- Circular: RBI/2023-24/112 CEPD No.S1130/13-01-003/2023-24
+- Applies to: Banks, NBFCs, payment aggregators regulated by RBI
+
+**FinCEN SAR** — Financial Crimes Enforcement Network
+- Suspicious Activity Report filing obligations (US)
+- Automated SAR generation in `/outputs/sar_reports/`
+        """)

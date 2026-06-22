@@ -1,4 +1,4 @@
-﻿"""
+"""
 Data Validation Layer
 Validates incoming transaction data for type correctness, range bounds,
 and business-rule consistency before model inference.

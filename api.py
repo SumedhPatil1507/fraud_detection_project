@@ -1,10 +1,12 @@
 """
-FastAPI prediction service - Enterprise Edition v3.0
-Features: RBAC, async shadow mode, graph intelligence, tokenization,
-          rate limiting, data validation, SAR trigger, audit logging
+FastAPI prediction service — Enterprise Edition v4.0
+Features: RBAC, async shadow mode, Neo4j graph intelligence,
+          cryptographic tokenization, async PostgreSQL, Celery tasks,
+          S3 artifact store, Prometheus observability, DPDP/RBI compliance
 
 Run locally:
     uvicorn api:app --reload --port 8000
+Swagger UI: http://localhost:8000/docs
 """
 
 import pickle
@@ -20,13 +22,17 @@ from typing import List, Optional
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
 from src.rbac import Role, require_permission
 from src.validation import validate_transaction
-from src.database import log_prediction, load_predictions
+from src.db_async import log_prediction, load_predictions
 from src.shadow import shadow_predict_async, shadow_divergence_stats
 from src.sar import generate_sar, load_sar_reports
 from src.savings_tracker import record_catch, get_savings_summary
 from src.retrain import load_retrain_log
-from src.graph_intelligence import load_ring_log
+from src.graph_neo4j import load_ring_log, detect_fraud_rings, get_graph_adapter
 from src.tokenizer import tokenize, rotate_keys, get_key_store_summary
+from src.object_store import get_registry_summary, load_model_artifacts
+from src.task_queue import submit_retrain, submit_drift_check, get_queue_stats, get_task_status
+from src.compliance import run_full_compliance, load_compliance_report
+from src.observability import record_prediction, start_metrics_server
 
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -39,9 +45,12 @@ except ImportError:
     _RATE_LIMIT = False
 
 app = FastAPI(
-    title="FraudGuard AI - Enterprise API",
-    description="XGBoost fraud detection with RBAC, async shadow mode, graph intelligence, tokenization.",
-    version="3.0.0",
+    title="FraudGuard AI — Enterprise API",
+    description=(
+        "XGBoost/LightGBM fraud detection · Neo4j graph intelligence · "
+        "Async PostgreSQL · Celery tasks · S3 artifacts · Prometheus · DPDP/RBI compliance"
+    ),
+    version="4.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -57,6 +66,15 @@ _model = _features = _means = None
 
 def load_artifacts():
     global _model, _features, _means
+    # Try object store with checksum verification first
+    try:
+        model, features, means = load_model_artifacts()
+        if model is not None:
+            _model, _features, _means = model, features, means
+            return True
+    except Exception as e:
+        print(f"[API] Object store load failed ({e}) — using local pickle")
+    # Local fallback
     if not os.path.exists(MODEL_PATH):
         return False
     _model    = pickle.load(open(MODEL_PATH, "rb"))
@@ -128,7 +146,8 @@ def _bg_log(amount, distance, hour, is_foreign, is_new_device, vpn, prob, is_fra
 
 @app.get("/", tags=["Health"])
 def health():
-    return {"status": "ok", "model_loaded": _model is not None, "version": "3.0.0"}
+    return {"status": "ok", "model_loaded": _model is not None, "version": "4.0.0",
+            "graph_backend": get_graph_adapter().backend}
 
 
 @app.get("/model/info", tags=["Model"])
@@ -158,6 +177,8 @@ async def predict(txn: Transaction, background_tasks: BackgroundTasks,
             m_token = tokenize(txn.merchant_id, "merchant_id")
             graph_ctx = {"customer_token": c_token, "merchant_token": m_token}
         shadow = await shadow_task
+        # Record to Prometheus
+        record_prediction(prob, is_fraud)
         background_tasks.add_task(_bg_log, txn.transaction_amount, txn.distance_from_home_km,
                                    txn.hour or 0, txn.is_foreign or 0, txn.is_new_device or 0,
                                    txn.vpn_detected or 0, prob, is_fraud, threshold)
@@ -248,3 +269,74 @@ def vault_keys(role: Role = Depends(require_permission("manage_users"))):
 @app.post("/vault/rotate", tags=["Security"])
 def vault_rotate(role: Role = Depends(require_permission("manage_users"))):
     return rotate_keys()
+
+# ── v4.0 New Endpoints ────────────────────────────────────────────────────────
+
+@app.get("/artifacts", tags=["MLOps"])
+def artifact_registry(role: Role = Depends(require_permission("manage_users"))):
+    """S3/MinIO artifact registry with MD5 checksums."""
+    return get_registry_summary()
+
+
+@app.post("/tasks/retrain", tags=["MLOps"])
+def trigger_retrain(reason: str = "api", role: Role = Depends(require_permission("retrain"))):
+    """Submit retraining job to Celery queue."""
+    return submit_retrain(reason=reason)
+
+
+@app.post("/tasks/drift-check", tags=["MLOps"])
+def trigger_drift(role: Role = Depends(require_permission("drift"))):
+    """Submit drift check to Celery queue."""
+    return submit_drift_check()
+
+
+@app.get("/tasks/{task_id}", tags=["MLOps"])
+def task_status(task_id: str, role: Role = Depends(require_permission("audit"))):
+    """Get Celery task status by ID."""
+    return get_task_status(task_id)
+
+
+@app.get("/tasks/queue/stats", tags=["MLOps"])
+def queue_stats(role: Role = Depends(require_permission("audit"))):
+    """Celery queue depth and worker stats."""
+    return get_queue_stats()
+
+
+@app.get("/compliance", tags=["Compliance"])
+def compliance_report(role: Role = Depends(require_permission("manage_users"))):
+    """DPDP Act 2023 + RBI IT Framework compliance report."""
+    report = load_compliance_report()
+    if not report:
+        report = run_full_compliance()
+    return report
+
+
+@app.post("/compliance/run", tags=["Compliance"])
+def run_compliance(role: Role = Depends(require_permission("manage_users"))):
+    """Re-run full compliance audit."""
+    return run_full_compliance()
+
+
+@app.get("/graph/rings", tags=["Graph Intelligence"])
+def fraud_rings(role: Role = Depends(require_permission("audit"))):
+    """Detected fraud rings from Neo4j / NetworkX."""
+    return {"rings": load_ring_log(), "backend": get_graph_adapter().backend}
+
+
+@app.get("/vault/keys", tags=["Security"])
+def vault_keys(role: Role = Depends(require_permission("manage_users"))):
+    return get_key_store_summary()
+
+
+@app.post("/vault/rotate", tags=["Security"])
+def vault_rotate(role: Role = Depends(require_permission("manage_users"))):
+    return rotate_keys()
+
+
+@app.on_event("startup")
+async def startup():
+    """Start Prometheus metrics server on startup (if configured)."""
+    port = int(os.environ.get("PROMETHEUS_PORT", 0))
+    if port:
+        import threading
+        threading.Thread(target=start_metrics_server, args=(port,), daemon=True).start()

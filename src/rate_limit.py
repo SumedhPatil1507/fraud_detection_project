@@ -1,4 +1,4 @@
-﻿"""
+"""
 API Rate Limiting using slowapi (Starlette-compatible limiter).
 Falls back gracefully if slowapi is not installed.
 """

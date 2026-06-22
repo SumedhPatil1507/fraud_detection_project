@@ -1,3 +1,4 @@
+# ── Core ML ───────────────────────────────────────────────────────────────────
 streamlit>=1.28.0
 pandas
 numpy
@@ -6,20 +7,49 @@ seaborn
 plotly
 scikit-learn
 xgboost
+lightgbm
 shap>=0.46.0
-networkx
 scipy
 joblib
+optuna
+
+# ── Graph ─────────────────────────────────────────────────────────────────────
+networkx
+
+# ── API & Async ───────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+httpx
 requests
+slowapi
+
+# ── Database & Async PostgreSQL ───────────────────────────────────────────────
+supabase
+sqlalchemy[asyncio]>=2.0
+asyncpg
+psycopg2-binary
+
+# ── Object Store (S3 / MinIO) ─────────────────────────────────────────────────
+boto3
+
+# ── Task Queue (Celery + Redis) ───────────────────────────────────────────────
+celery[redis]
+redis
+
+# ── Observability (Prometheus) ────────────────────────────────────────────────
+prometheus-client
+
+# ── Graph DB (Neo4j) ──────────────────────────────────────────────────────────
+neo4j
+
+# ── Security & Cryptography ───────────────────────────────────────────────────
+cryptography
 attrs
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+groq
+
+# ── Data Formats ─────────────────────────────────────────────────────────────
 openpyxl
 pyarrow
-supabase
-fastapi
-uvicorn
-pydantic
-cryptography
-slowapi
-groq
-lightgbm
-optuna

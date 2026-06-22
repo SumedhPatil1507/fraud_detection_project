@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fraud Savings Tracker
 Accumulates real-time savings from caught fraud across sessions.
 Persists to CSV so totals survive restarts.

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Dynamic Cost-Benefit Optimizer
 Finds the optimal decision threshold by maximizing net financial impact.
 Also supports custom cost matrices and ROI projections.

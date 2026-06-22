@@ -1,18 +1,8 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    ports:
-      - "8000:8000"
-    environment:
-      - API_KEY=${API_KEY:-fraud-dev-key}
-    volumes:
-      - ./outputs:/app/outputs
-    command: uvicorn api:app --host 0.0.0.0 --port 8000
 
+  # ── Streamlit UI ─────────────────────────────────────────────────────────────
   streamlit:
     build:
       context: .
@@ -20,11 +10,142 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - APP_PASSWORD=${APP_PASSWORD:-admin123}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-    volumes:
-      - ./outputs:/app/outputs
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - DATABASE_URL=postgresql+asyncpg://fraudguard:password@pgbouncer:6432/fraudguard
+      - REDIS_URL=redis://redis:6379/0
+      - NEO4J_URI=${NEO4J_URI}
     depends_on:
-      - api
-    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # ── FastAPI ───────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://fraudguard:password@pgbouncer:6432/fraudguard
+      - REDIS_URL=redis://redis:6379/0
+      - API_KEY_ADMIN=${API_KEY_ADMIN:-admin-dev-key}
+      - API_KEY_ANALYST=${API_KEY_ANALYST:-analyst-dev-key}
+      - API_KEY_VIEWER=${API_KEY_VIEWER:-viewer-dev-key}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - PROMETHEUS_PORT=9090
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # ── Celery Worker ─────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: celery -A src.task_queue worker --loglevel=info -Q fraud_tasks --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://fraudguard:password@pgbouncer:6432/fraudguard
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # ── Celery Beat (scheduler) ───────────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: celery -A src.task_queue beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=fraudguard
+      - POSTGRES_USER=fraudguard
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # ── PgBouncer (connection pooler) ────────────────────────────────────────────
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    environment:
+      - DATABASES_HOST=postgres
+      - DATABASES_PORT=5432
+      - DATABASES_DBNAME=fraudguard
+      - DATABASES_USER=fraudguard
+      - DATABASES_PASSWORD=password
+      - PGBOUNCER_POOL_MODE=transaction
+      - PGBOUNCER_MAX_CLIENT_CONN=1000
+      - PGBOUNCER_DEFAULT_POOL_SIZE=25
+    ports:
+      - "6432:6432"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible) ─────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # ── Grafana ───────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  minio_data:
+  grafana_data:

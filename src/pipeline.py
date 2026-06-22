@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from src.config import DATA_PATH, SAMPLE_PATH
-from src.graph_intelligence import extract_graph_features
+from src.graph_neo4j import extract_graph_features
 
 try:
     import networkx as nx
