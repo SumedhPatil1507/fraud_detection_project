@@ -89,6 +89,17 @@ if df is None:
 mask_data = st.sidebar.checkbox("🔒 Mask PII", value=True)
 display_df = mask_pii(df) if mask_data else df
 
+# ── Cached artifact loader — loaded once, shared across all tabs ──────────────
+@st.cache_resource(show_spinner="Loading model artifacts...")
+def load_model_artifacts_cached():
+    """Load model, features, means once and cache in memory for the session."""
+    if not os.path.exists(MODEL_PATH):
+        return None, None, None
+    _model    = pickle.load(open(MODEL_PATH, "rb"))
+    _features = pickle.load(open(FEATURE_PATH, "rb"))
+    _means    = pickle.load(open(MEAN_PATH, "rb"))
+    return _model, _features, _means
+
 st.sidebar.header("⚙️ Model Controls")
 fn_cost = st.sidebar.number_input("FN Cost ($)", value=5000, step=500)
 fp_cost = st.sidebar.number_input("FP Cost ($)", value=200, step=50)
@@ -312,8 +323,7 @@ with tab_shap:
             shap_submit = st.form_submit_button("Explain Prediction")
 
         if shap_submit and os.path.exists(MEAN_PATH):
-            means    = pickle.load(open(MEAN_PATH, "rb"))
-            features = pickle.load(open(FEATURE_PATH, "rb"))
+            _, features, means = load_model_artifacts_cached()
             base_dict = means.to_dict()
             base_dict.update({
                 "transaction_amount": s_amount,
@@ -393,12 +403,11 @@ with tab_drift:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_predict:
     st.subheader("⚡ Real-time Transaction Scoring")
-    if not os.path.exists(MODEL_PATH):
+    _pred_model, _pred_features, _pred_means = load_model_artifacts_cached()
+    if _pred_model is None:
         st.warning("Train the model first.")
     else:
-        model    = pickle.load(open(MODEL_PATH, "rb"))
-        features = pickle.load(open(FEATURE_PATH, "rb"))
-        means    = pickle.load(open(MEAN_PATH, "rb"))
+        model, features, means = _pred_model, _pred_features, _pred_means
         pred_threshold = st.slider("Threshold", 0.01, 0.99, 0.30, 0.01, key="pred_thresh")
 
         with st.form("predict_form"):
@@ -477,12 +486,11 @@ with tab_live:
     st.subheader("🔴 Live Transaction Stream")
     st.caption("Simulates a real-time feed of incoming transactions scored by the model.")
 
-    if not os.path.exists(MODEL_PATH):
+    _live_model, _live_features, _live_means = load_model_artifacts_cached()
+    if _live_model is None:
         st.warning("Train the model first.")
     else:
-        model    = pickle.load(open(MODEL_PATH, "rb"))
-        features = pickle.load(open(FEATURE_PATH, "rb"))
-        means    = pickle.load(open(MEAN_PATH, "rb"))
+        model, features, means = _live_model, _live_features, _live_means
 
         # ── Controls ───────────────────────────────────────────────────────────
         c1, c2, c3, c4 = st.columns(4)
@@ -535,7 +543,6 @@ with tab_live:
             ph_rate.metric("Fraud Rate", f"{rate:.1f}%")
             ph_avg.metric("Avg Prob", f"{avg_p:.2%}")
 
-            # Probability time series
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=list(range(len(fdf))), y=fdf['fraud_probability'],
@@ -549,14 +556,11 @@ with tab_live:
                           line_color='red', annotation_text='Threshold')
             fig.update_layout(
                 title='Live Fraud Probability Feed',
-                xaxis_title='Transaction #',
-                yaxis_title='Fraud Probability',
-                yaxis=dict(range=[0, 1]),
-                height=300, margin=dict(t=40, b=30)
+                xaxis_title='Transaction #', yaxis_title='Fraud Probability',
+                yaxis=dict(range=[0, 1]), height=300, margin=dict(t=40, b=30)
             )
             ph_chart.plotly_chart(fig, use_container_width=True)
 
-            # Recent alerts
             alerts = fdf[fdf['predicted_fraud'] == 1].tail(5)
             if not alerts.empty:
                 alert_cols = [c for c in ['timestamp', 'transaction_amount',
@@ -566,7 +570,6 @@ with tab_live:
                     f"🚨 {len(alerts)} recent alert(s)\n" +
                     alerts[alert_cols].to_string(index=False))
 
-            # Table
             disp_cols = [c for c in ['timestamp', 'transaction_amount',
                          'distance_from_home_km', 'hour', 'fraud_probability',
                          'risk_level', 'predicted_fraud'] if c in fdf.columns]
@@ -576,7 +579,7 @@ with tab_live:
 
         # ── Stream loop ────────────────────────────────────────────────────────
         if st.session_state.streaming:
-            for _ in range(200):  # max 200 txns per run
+            for _ in range(200):
                 if not st.session_state.streaming:
                     break
                 seed = int(time.time() * 1000) % 999999

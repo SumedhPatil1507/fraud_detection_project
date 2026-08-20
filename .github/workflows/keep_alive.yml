@@ -1,0 +1,52 @@
+name: Keep Alive — Streamlit Ping
+
+on:
+  schedule:
+    # Ping every 10 minutes — prevents Streamlit Community Cloud cold-start
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Manual trigger reason"
+        required: false
+        default: "manual ping"
+
+jobs:
+  ping:
+    name: Ping Streamlit App
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Ping live app
+        id: ping
+        run: |
+          URL="https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app/"
+          echo "Pinging: $URL"
+          echo "Timestamp: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --output /dev/null \
+            --write-out "%{http_code}" \
+            --max-time 30 \
+            --retry 2 \
+            --retry-delay 5 \
+            --user-agent "GitHub-Actions-KeepAlive/1.0" \
+            "$URL")
+
+          echo "HTTP response code: $HTTP_CODE"
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
+            echo "✅ App is alive (HTTP $HTTP_CODE)"
+          else
+            echo "⚠️  Unexpected response (HTTP $HTTP_CODE) — app may be waking up"
+            # Do NOT fail — cold-start returns non-200 while waking
+          fi
+
+      - name: Log result
+        if: always()
+        run: |
+          echo "Final HTTP code: ${{ steps.ping.outputs.http_code }}"
+          echo "Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

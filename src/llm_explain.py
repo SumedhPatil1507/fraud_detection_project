@@ -1,17 +1,30 @@
 """
 LLM-powered fraud explanation using Groq (llama-3).
 Takes SHAP values + transaction details and returns a plain-English explanation.
+Groq client is cached via st.cache_resource — built once, reused across reruns.
 """
 import os
 import numpy as np
 import pandas as pd
 
+try:
+    import streamlit as st
+    _ST = True
+except Exception:
+    _ST = False
 
-def _get_client():
+
+def _build_groq_client():
+    """Build Groq client — expensive import done once, cached by caller."""
     try:
         from groq import Groq
-        api_key = os.environ.get("GROQ_API_KEY") or \
-                  _get_streamlit_secret()
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            try:
+                import streamlit as _st
+                api_key = _st.secrets.get("GROQ_API_KEY", None)
+            except Exception:
+                pass
         if not api_key:
             return None
         return Groq(api_key=api_key)
@@ -19,12 +32,15 @@ def _get_client():
         return None
 
 
-def _get_streamlit_secret():
-    try:
-        import streamlit as st
-        return st.secrets.get("GROQ_API_KEY", None)
-    except Exception:
-        return None
+# Cache the Groq client across reruns — avoids reconnect on every interaction
+if _ST:
+    _cached_groq = st.cache_resource(show_spinner=False)(_build_groq_client)
+else:
+    _cached_groq = _build_groq_client
+
+
+def _get_client():
+    return _cached_groq()
 
 
 def get_top_shap_factors(model, input_df: pd.DataFrame,
