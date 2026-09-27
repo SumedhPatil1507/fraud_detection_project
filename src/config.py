@@ -22,3 +22,26 @@ MINIO_ENDPOINT    = os.environ.get("MINIO_ENDPOINT", "")
 NEO4J_URI         = os.environ.get("NEO4J_URI", "")
 NEPTUNE_ENDPOINT  = os.environ.get("NEPTUNE_ENDPOINT", "")
 PROMETHEUS_PORT   = int(os.environ.get("PROMETHEUS_PORT", "9090"))
+
+# ── Fraud Investigation Copilot ─────────────────────────────────────────────
+# Vector store (ChromaDB) — persisted on local disk by default
+CHROMA_PERSIST_DIR   = os.environ.get(
+    "CHROMA_PERSIST_DIR",
+    os.path.join(BASE_DIR, "outputs", "chroma_db"),
+)
+CHROMA_AUDIT_COLLECTION  = os.environ.get("CHROMA_AUDIT_COLLECTION",  "audit_log")
+CHROMA_SAR_COLLECTION    = os.environ.get("CHROMA_SAR_COLLECTION",    "sar_reports")
+
+# Embedding model (sentence-transformers, runs locally — no API key needed)
+EMBEDDING_MODEL = os.environ.get(
+    "EMBEDDING_MODEL", "all-MiniLM-L6-v2"
+)
+
+# LLM used by the copilot writer agent (reuses existing GROQ_API_KEY)
+COPILOT_LLM_MODEL = os.environ.get("COPILOT_LLM_MODEL", "llama3-8b-8192")
+
+# How many historical cases the retriever surfaces per query
+COPILOT_TOP_K = int(os.environ.get("COPILOT_TOP_K", "5"))
+
+# Minimum fraud probability for a transaction to enter the copilot pipeline
+COPILOT_MIN_FRAUD_PROB = float(os.environ.get("COPILOT_MIN_FRAUD_PROB", "0.5"))

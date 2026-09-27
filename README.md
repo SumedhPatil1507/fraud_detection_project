@@ -1,21 +1,23 @@
-# 🚨 FraudGuard AI — Enterprise Edition v4.0
+# 🚨 FraudGuard AI — Enterprise Edition v5.0
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
 ![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.2-blue)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-1.5-green)
 
 **[Live Demo →](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)**
 
-Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **Neo4j graph intelligence**, **async PostgreSQL + PgBouncer**, **Celery task queuing**, **S3 artifact storage**, **Prometheus observability**, and **DPDP Act 2023 / RBI IT Framework compliance mapping** — all with graceful fallbacks so it runs on Streamlit Cloud for free.
+Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **Neo4j graph intelligence**, **async PostgreSQL + PgBouncer**, **Celery task queuing**, **S3 artifact storage**, **Prometheus observability**, **DPDP Act 2023 / RBI IT Framework compliance mapping**, and a **LangGraph-powered Fraud Investigation Copilot** — all with graceful fallbacks so it runs on Streamlit Cloud for free.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│         Streamlit UI  (15 tabs)  /  FastAPI v4.0        │
-└──────────────────────┬──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│         Streamlit UI  (16 tabs)  /  FastAPI v5.0            │
+└──────────────────────┬──────────────────────────────────────┘
                        │
           ┌────────────┴────────────┐
           │       ML Engine         │
@@ -23,27 +25,28 @@ Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **N
           │  SHAP · Optuna · CV     │
           └────────────┬────────────┘
                        │
-     ┌─────────────────┼─────────────────┐
-     │                 │                 │
-┌────▼────┐    ┌───────▼──────┐   ┌─────▼──────────┐
-│  Graph  │    │  Data Layer  │   │   Security      │
-│  Layer  │    │  asyncpg +   │   │  Fernet AES-128 │
-│ Neo4j / │    │  PgBouncer → │   │  HMAC tokens    │
-│ Neptune │    │  Supabase →  │   │  RBAC 3-tier    │
-│ NetworkX│    │  CSV         │   │  Rate limiting  │
-└─────────┘    └───────┬──────┘   └─────────────────┘
-                       │
+     ┌─────────────────┼──────────────────────┐
+     │                 │                       │
+┌────▼────┐    ┌───────▼──────┐   ┌───────────▼──────────┐
+│  Graph  │    │  Data Layer  │   │  🤖 Copilot (NEW)     │
+│  Layer  │    │  asyncpg +   │   │  LangGraph pipeline   │
+│ Neo4j / │    │  PgBouncer → │   │  RetrieverAgent       │
+│ Neptune │    │  Supabase →  │   │  ToolAgent            │
+│ NetworkX│    │  CSV         │   │  WriterAgent          │
+└─────────┘    └───────┬──────┘   │  HITL Router          │
+                       │          └───────────────────────┘
           ┌────────────┴────────────┐
           │    Background Services  │
           │  Celery + Redis         │
           │  S3 / MinIO artifacts   │
           │  Prometheus + Grafana   │
+          │  ChromaDB vector store  │
           └─────────────────────────┘
 ```
 
 ---
 
-## Feature Matrix — 33 Modules
+## Feature Matrix — 37 Modules
 
 | Layer | Modules | Key capability |
 |---|---|---|
@@ -52,19 +55,116 @@ Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **N
 | **Database** | `database.py`, `db_async.py` | SQLAlchemy asyncpg pool → PgBouncer → Supabase REST → CSV; MD5 record checksums |
 | **Artifact Store** | `object_store.py` | S3/MinIO with MD5 integrity check; refuses corrupt model loads |
 | **Task Queue** | `task_queue.py` | Celery + Redis; retrain, drift-check, SAR batch, beat schedule; sync fallback |
-| **Observability** | `observability.py` | Prometheus p95/p99 latency, PSI gauge, TP/FP ratio, DB pool, queue depth; Grafana JSON |
+| **Observability** | `observability.py`, `copilot_metrics.py` | Prometheus p95/p99 latency, PSI gauge, TP/FP ratio, DB pool, queue depth; **9 copilot-specific counters/histograms**; Grafana JSON |
 | **Compliance** | `compliance.py` | DPDP Act 2023 (7 controls) + RBI IT Framework (7 controls); evidence + remediation; JSON report |
 | **Security** | `encryption.py`, `rbac.py`, `tokenizer.py`, `pii.py`, `rate_limit.py` | Fernet encryption, RBAC, HMAC tokenization, key rotation, MultiFernet, pgcrypto SQL |
 | **Shadow Mode** | `shadow.py` | `asyncio.create_task()` parallel inference, ThreadPoolExecutor, BackgroundTask logging |
 | **MLOps** | `drift.py`, `retrain.py` | PSI drift detection, auto-retraining, model versioning, webhook notifications |
 | **Finance** | `business.py`, `optimizer.py`, `savings_tracker.py` | Threshold optimizer, FP/FN cost model, ROI projections, savings accumulator |
 | **Compliance/SAR** | `sar.py`, `audit.py` | FinCEN-style SAR generation, full prediction audit log |
+| **🤖 Copilot (NEW)** | `agent_graph.py`, `vector_store.py`, `copilot_metrics.py` | LangGraph 3-agent pipeline, ChromaDB RAG, HITL routing — see below |
 | **UI** | `plots.py`, `hitl.py`, `llm_explain.py`, `simulator.py` | 30+ Plotly charts, HITL queue, Groq LLM explanations, live transaction stream |
 | **API** | `validation.py`, `ingest.py`, `auth.py` | Pydantic validation, multi-format file ingestion, Streamlit auth |
 
 ---
 
-## Dashboard — 15 Tabs
+## 🤖 Fraud Investigation Copilot (NEW in v5.0)
+
+A **LangGraph multi-agent pipeline** that automates SAR investigation end-to-end, routing every draft through the existing HITL queue for analyst approval before anything is filed.
+
+### Pipeline
+
+```
+transaction + fraud_probability
+        │
+        ▼
+┌───────────────────┐
+│  RetrieverAgent   │  semantic search over audit log + past SARs
+│  (ChromaDB RAG)   │  using all-MiniLM-L6-v2 embeddings (local, no API key)
+└────────┬──────────┘
+         │  retrieved_cases (top-k similar historical incidents)
+         ▼
+┌───────────────────┐
+│   ToolAgent       │  tool 1: graph_intelligence → ring membership + risk score
+│ (tool-calling)    │  tool 2: shap_utils / llm_explain → top SHAP feature drivers
+└────────┬──────────┘
+         │  graph_intel + fraud_rings + shap_factors
+         ▼
+┌───────────────────┐
+│   WriterAgent     │  Groq LLM (llama3-8b-8192) drafts structured SAR narrative
+│  (Groq LLM)      │  citing SHAP evidence, graph rings, and retrieved precedents
+│                   │  → calls sar.generate_sar(), status forced to DRAFT
+└────────┬──────────┘
+         │  sar_draft (status=DRAFT, never auto-filed)
+         ▼
+┌───────────────────┐
+│   HITLRouter      │  enqueues to hitl.add_to_review_queue()
+│                   │  analyst approves/rejects in the 👤 HITL tab
+└───────────────────┘
+```
+
+### Graceful degradation
+
+| Condition | Behaviour |
+|---|---|
+| `langgraph` not installed | Falls back to identical linear pipeline (no graph overhead) |
+| `chromadb` / `sentence-transformers` not installed | Retriever returns empty list; pipeline continues |
+| `GROQ_API_KEY` not set | Writer uses rule-based narrative from `sar._build_narrative()` |
+| SHAP / model not provided | SHAP factors are empty; pipeline continues |
+| Graph ring log empty | Graph intel returns zero-risk defaults |
+
+### Observability
+
+9 new Prometheus metrics under the `fraudguard_copilot_*` namespace, all following the same naming and label conventions as `observability.py`:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `fraudguard_copilot_agent_runs_total` | Counter | `agent`, `status` |
+| `fraudguard_copilot_agent_latency_seconds` | Histogram | `agent` |
+| `fraudguard_copilot_tool_calls_total` | Counter | `tool`, `status` |
+| `fraudguard_copilot_retriever_hits` | Histogram | — |
+| `fraudguard_copilot_sar_drafts_total` | Counter | `status` |
+| `fraudguard_copilot_hitl_queued_total` | Counter | — |
+| `fraudguard_copilot_graph_queries_total` | Counter | `status` |
+| `fraudguard_copilot_shap_queries_total` | Counter | `status` |
+| `fraudguard_copilot_graph_errors_total` | Counter | `agent` |
+
+### New files
+
+| File | Purpose |
+|---|---|
+| `src/agent_graph.py` | LangGraph `StateGraph`, `CopilotState`, all four node functions, `run_copilot()` entry point |
+| `src/vector_store.py` | ChromaDB persistent client, `_STEmbeddingFunction`, `index_audit_log()`, `index_sar_reports()`, `search_all()` |
+| `src/copilot_metrics.py` | 9 Prometheus metrics + `@instrument_agent` decorator |
+
+### New environment variables
+
+```bash
+# Vector store location (default: ./outputs/chroma_db)
+CHROMA_PERSIST_DIR="/path/to/chroma"
+
+# ChromaDB collection names
+CHROMA_AUDIT_COLLECTION="audit_log"
+CHROMA_SAR_COLLECTION="sar_reports"
+
+# Embedding model (runs locally via sentence-transformers)
+EMBEDDING_MODEL="all-MiniLM-L6-v2"
+
+# LLM model for SAR narrative (reuses existing GROQ_API_KEY)
+COPILOT_LLM_MODEL="llama3-8b-8192"
+
+# Max historical cases retrieved per query
+COPILOT_TOP_K="5"
+
+# Min fraud probability to enter the copilot pipeline
+COPILOT_MIN_FRAUD_PROB="0.5"
+```
+
+---
+
+---
+
+## Dashboard — 16 Tabs
 
 | # | Tab | Features |
 |---|---|---|
@@ -83,7 +183,7 @@ Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **N
 | 13 | 📋 SAR | FinCEN SAR management — review, file, dismiss |
 | 14 | 📡 Observability | Live metrics (p95/p99), PSI chart, Celery queue, artifact registry, Grafana JSON |
 | 15 | ⚖️ Compliance | DPDP Act 2023 + RBI IT Framework audit with score gauge |
-
+| **16** | **🤖 Copilot** *(NEW)* | **LangGraph investigation pipeline — vector search, graph+SHAP tools, AI SAR draft, HITL routing** |
 ---
 
 ## Quick Start
@@ -280,6 +380,7 @@ Graph features auto-activate when `customer_id` and `merchant_id` columns are pr
 | **API** | FastAPI · asyncio · BackgroundTasks · Pydantic v2 |
 | **Frontend** | Streamlit · Plotly · Seaborn |
 | **LLM** | Groq (Llama-3) |
+| **Agentic AI** | LangGraph · LangChain Core · sentence-transformers · ChromaDB |
 | **DevOps** | Docker Compose · GitHub Actions · pytest |
 
 ---
@@ -301,4 +402,4 @@ MIT — see [LICENSE](LICENSE)
 
 ---
 
-Built by **[@SumedhPatil1507](https://github.com/SumedhPatil1507)** — demonstrates senior ML engineering: async infrastructure, graph databases, cloud-native storage, regulatory compliance (DPDP/RBI), and production observability. **⭐ Star if useful!**
+Built by **[@SumedhPatil1507](https://github.com/SumedhPatil1507)** — demonstrates senior ML engineering: async infrastructure, graph databases, **LangGraph multi-agent RAG pipeline**, cloud-native storage, regulatory compliance (DPDP/RBI), and production observability. **⭐ Star if useful!**

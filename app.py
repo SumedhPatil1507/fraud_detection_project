@@ -24,6 +24,14 @@ from src.optimizer import optimize_threshold, roi_projection
 from src.savings_tracker import get_savings_summary, load_savings_log
 from src.shadow import shadow_predict, shadow_divergence_stats, load_shadow_log
 from src.sar import load_sar_reports, update_sar_status
+from src.agent_graph import run_copilot
+from src.vector_store import (
+    index_audit_log, index_sar_reports, get_collection_stats,
+)
+from src.copilot_metrics import (
+    COPILOT_AGENT_RUNS, COPILOT_SAR_DRAFTS,
+    COPILOT_HITL_QUEUED, COPILOT_RETRIEVER_HITS,
+)
 from src.observability import get_live_metrics, compute_live_psi
 from src.compliance import run_full_compliance, load_compliance_report
 from src.task_queue import submit_retrain, submit_drift_check, get_queue_stats
@@ -117,11 +125,11 @@ tabs = st.tabs([
     "🔍 Explainability", "📡 Drift", "⚡ Predict",
     "🔴 Live Stream", "👤 HITL", "🗂️ Audit",
     "🕸️ Graph Intel", "🔑 Vault", "💰 Savings", "📋 SAR",
-    "📡 Observability", "⚖️ Compliance"
+    "📡 Observability", "⚖️ Compliance", "🤖 Copilot"
 ])
 (tab_data, tab_train, tab_metrics, tab_shap, tab_drift, tab_predict,
  tab_live, tab_hitl, tab_audit, tab_graph, tab_vault, tab_savings,
- tab_sar, tab_obs, tab_compliance) = tabs
+ tab_sar, tab_obs, tab_compliance, tab_copilot) = tabs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DATA EXPLORER
@@ -1147,3 +1155,267 @@ with tab_compliance:
 - Suspicious Activity Report filing obligations (US)
 - Automated SAR generation in `/outputs/sar_reports/`
         """)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 16 — FRAUD INVESTIGATION COPILOT
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_copilot:
+    st.subheader("🤖 Fraud Investigation Copilot")
+    st.markdown(
+        "LangGraph multi-agent pipeline: **Retriever** (semantic search over "
+        "audit log + SARs) → **Tool** (graph-ring membership + SHAP drivers) → "
+        "**Writer** (AI SAR narrative) → **HITL queue** (analyst approval)."
+    )
+
+    # ── Vector-store status & indexing ────────────────────────────────────────
+    with st.expander("📚 Vector Store — Index Management", expanded=False):
+        stats = get_collection_stats()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Audit-log docs",  stats["audit_log_docs"])
+        c2.metric("SAR docs",        stats["sar_docs"])
+        c3.metric("Embed model",     stats["embed_model"])
+        c4.metric(
+            "Backend",
+            "ChromaDB ✅" if stats["chroma_available"] else "ChromaDB ❌ (install)",
+        )
+        if not stats["chroma_available"] or not stats["st_available"]:
+            st.warning(
+                "Vector search is disabled. Run: "
+                "`pip install chromadb sentence-transformers` then restart."
+            )
+
+        col_idx1, col_idx2, col_idx3 = st.columns(3)
+        if col_idx1.button("🔄 Index Audit Log"):
+            with st.spinner("Embedding audit log…"):
+                n = index_audit_log()
+            st.success(f"Upserted {n} audit-log documents.")
+        if col_idx2.button("🔄 Index SAR Reports"):
+            with st.spinner("Embedding SAR reports…"):
+                n = index_sar_reports()
+            st.success(f"Upserted {n} SAR documents.")
+        if col_idx3.button("🔄 Index Both"):
+            with st.spinner("Indexing…"):
+                na = index_audit_log()
+                ns = index_sar_reports()
+            st.success(f"Audit: {na} docs  |  SARs: {ns} docs")
+
+    st.divider()
+
+    # ── Prometheus counter snapshot ────────────────────────────────────────────
+    with st.expander("📊 Copilot Metrics Snapshot", expanded=False):
+        st.caption(
+            "Live counters from `fraudguard_copilot_*` — scraped by Prometheus "
+            "on the `/metrics` endpoint."
+        )
+        try:
+            from prometheus_client import REGISTRY
+            # Pull the sample values we care about
+            _prom_rows = []
+            for metric in REGISTRY.collect():
+                if metric.name.startswith("fraudguard_copilot"):
+                    for sample in metric.samples:
+                        _prom_rows.append({
+                            "metric": sample.name,
+                            "labels": str(sample.labels),
+                            "value":  sample.value,
+                        })
+            if _prom_rows:
+                st.dataframe(
+                    pd.DataFrame(_prom_rows).sort_values("metric"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("No copilot metrics recorded yet — run the pipeline first.")
+        except Exception:
+            st.info("prometheus_client not installed — metrics are no-ops.")
+
+    st.divider()
+
+    # ── Transaction input form ────────────────────────────────────────────────
+    st.subheader("🔎 Investigate a Transaction")
+    st.caption(
+        "Fill in the transaction details below. If a trained model is loaded "
+        "the copilot will also compute SHAP feature drivers."
+    )
+
+    with st.form("copilot_form"):
+        fc1, fc2, fc3 = st.columns(3)
+        cp_amount   = fc1.number_input("Amount ($)",         min_value=0.0, value=3500.0, step=100.0)
+        cp_distance = fc2.number_input("Distance (km)",      min_value=0.0, value=450.0,  step=10.0)
+        cp_hour     = fc3.number_input("Hour (0–23)",        min_value=0,   max_value=23, value=3)
+
+        fc4, fc5, fc6 = st.columns(3)
+        cp_foreign  = fc4.selectbox("Foreign transaction",  [0, 1], format_func=lambda x: "Yes" if x else "No")
+        cp_new_dev  = fc5.selectbox("New / unknown device", [0, 1], format_func=lambda x: "Yes" if x else "No")
+        cp_vpn      = fc6.selectbox("VPN detected",         [0, 1], format_func=lambda x: "Yes" if x else "No")
+
+        fc7, fc8 = st.columns(2)
+        cp_prob   = fc7.slider(
+            "Fraud probability (from model)", 0.0, 1.0, 0.75, 0.01,
+            help="Use the Predict tab to obtain this value, or enter manually."
+        )
+        cp_cust_id = fc8.text_input("Customer ID (optional)", placeholder="e.g. 1042")
+        cp_merch_id = st.text_input("Merchant ID (optional)", placeholder="e.g. 77")
+
+        cp_submit = st.form_submit_button("🚀 Run Copilot Investigation", type="primary")
+
+    if cp_submit:
+        # Build the transaction dict
+        cp_txn = {
+            "transaction_amount":     cp_amount,
+            "distance_from_home_km":  cp_distance,
+            "hour":                   cp_hour,
+            "is_foreign":             bool(cp_foreign),
+            "is_new_device":          bool(cp_new_dev),
+            "vpn_detected":           bool(cp_vpn),
+            "timestamp":              pd.Timestamp.utcnow().isoformat(),
+            "customer_id":            cp_cust_id or "unknown",
+            "merchant_id":            cp_merch_id or "unknown",
+        }
+
+        # Optionally pass the trained model + aligned input_df for SHAP
+        cp_model, cp_features, cp_means = load_model_artifacts_cached()
+        cp_input_df = None
+        if cp_model is not None and cp_means is not None:
+            base = cp_means.to_dict()
+            base.update({
+                "transaction_amount":    cp_amount,
+                "distance_from_home_km": cp_distance,
+                "hour":                  cp_hour,
+                "amount_log":            np.log1p(cp_amount),
+                "hour_sin":              np.sin(2 * np.pi * cp_hour / 24),
+                "hour_cos":              np.cos(2 * np.pi * cp_hour / 24),
+                "is_foreign":            cp_foreign,
+                "is_new_device":         cp_new_dev,
+                "vpn_detected":          cp_vpn,
+            })
+            cp_input_df = pd.DataFrame([{f: base.get(f, 0) for f in cp_features}])
+
+        # ── Run the pipeline ──────────────────────────────────────────────────
+        with st.spinner("🤖 Copilot investigating… (retriever → tool → writer → HITL)"):
+            try:
+                result = run_copilot(
+                    transaction=cp_txn,
+                    fraud_probability=float(cp_prob),
+                    model=(
+                        cp_model.estimators_[0]
+                        if cp_model is not None and hasattr(cp_model, "estimators_")
+                        else cp_model
+                    ),
+                    input_df=cp_input_df,
+                    feature_names=list(cp_features) if cp_features is not None else [],
+                )
+                st.session_state["copilot_result"] = result
+            except Exception as cp_err:
+                st.error(f"Copilot pipeline error: {cp_err}")
+                result = None
+
+    # ── Display results ───────────────────────────────────────────────────────
+    result = st.session_state.get("copilot_result")
+    if result:
+        sar   = result.get("sar_draft", {})
+        graph = result.get("graph_intel", {})
+        cases = result.get("retrieved_cases", [])
+        shap  = result.get("shap_factors", [])
+        rings = result.get("fraud_rings", [])
+
+        # ── Top-level summary metrics ──────────────────────────────────────────
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("SAR ID",            sar.get("sar_id", "—"))
+        r2.metric("Status",            sar.get("status", "DRAFT"))
+        r3.metric("Precedents found",  len(cases))
+        r4.metric("Graph risk score",  f"{graph.get('graph_risk_score', 0):.4f}")
+        r5.metric("Ring member",       "⚠️ Yes" if graph.get("ring_member") else "✅ No")
+
+        # ── AI narrative ──────────────────────────────────────────────────────
+        st.subheader("📝 AI-Drafted SAR Narrative")
+        narrative = result.get("narrative", "")
+        st.markdown(
+            f'<div style="background:#1e1e2e; padding:16px; border-radius:8px; '
+            f'border-left:4px solid #e74c3c; font-size:14px; line-height:1.7;">'
+            f'{narrative.replace(chr(10), "<br>")}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.divider()
+
+        # ── Three-column details ───────────────────────────────────────────────
+        col_shap, col_graph, col_prec = st.columns(3)
+
+        with col_shap:
+            st.markdown("**🔬 SHAP Feature Drivers**")
+            if shap:
+                shap_df = pd.DataFrame(shap)[["feature", "value", "shap_impact", "direction"]]
+                shap_df["shap_impact"] = shap_df["shap_impact"].round(4)
+                # Colour-code direction
+                def _colour_direction(val):
+                    return "color: #e74c3c" if val == "increases" else "color: #2ecc71"
+                st.dataframe(
+                    shap_df.style.map(_colour_direction, subset=["direction"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("SHAP not available — train a model first.")
+
+        with col_graph:
+            st.markdown("**🕸️ Graph Intelligence**")
+            if graph:
+                gi_items = {
+                    "Graph risk score":    f"{graph.get('graph_risk_score', 0):.4f}",
+                    "Ring member":         "Yes" if graph.get("ring_member") else "No",
+                    "Rings matched":       graph.get("ring_count", 0),
+                    "Max ring fraud rate": f"{graph.get('max_ring_fraud_rate', 0):.1%}",
+                    "Customer degree":     graph.get("customer_degree", 0),
+                    "Merchant degree":     graph.get("merchant_degree", 0),
+                }
+                st.table(pd.DataFrame.from_dict(gi_items, orient="index", columns=["Value"]))
+                if rings:
+                    with st.expander(f"Ring details ({len(rings)} rings)"):
+                        for r in rings[:3]:
+                            st.json({
+                                "ring_id":    r.get("ring_id"),
+                                "ring_type":  r.get("ring_type"),
+                                "fraud_rate": r.get("fraud_rate"),
+                                "risk_level": r.get("risk_level"),
+                                "size":       r.get("size"),
+                            })
+            else:
+                st.info("No graph data — run ring detection in the Graph Intel tab first.")
+
+        with col_prec:
+            st.markdown("**📂 Historical Precedents**")
+            if cases:
+                for i, hit in enumerate(cases[:5]):
+                    src_icon = "📋" if hit["source"] == "sar_reports" else "🗂️"
+                    with st.expander(
+                        f"{src_icon} [{i+1}] {hit['id']}  ·  score={hit['score']:.3f}",
+                        expanded=(i == 0),
+                    ):
+                        st.caption(f"Source: {hit['source']}")
+                        st.markdown(hit["text"][:350] + ("…" if len(hit["text"]) > 350 else ""))
+                        meta = hit.get("metadata", {})
+                        if "fraud_probability" in meta:
+                            st.caption(
+                                f"Fraud prob: {meta['fraud_probability']:.4f}  |  "
+                                f"Amount: ${meta.get('transaction_amount', meta.get('amount_usd', 0)):.2f}"
+                            )
+            else:
+                st.info("No precedents found — index the audit log / SARs first.")
+
+        st.divider()
+
+        # ── HITL confirmation banner ───────────────────────────────────────────
+        st.success(
+            f"✅ SAR draft **{sar.get('sar_id', '—')}** has been routed to the "
+            f"**HITL Review Queue** (see the 👤 HITL tab). "
+            f"An analyst must approve or reject it before filing."
+        )
+
+        # ── Full SAR JSON ──────────────────────────────────────────────────────
+        with st.expander("🗃️ Full SAR JSON (read-only draft)", expanded=False):
+            # Strip non-serialisable keys before rendering
+            safe_sar = {k: v for k, v in sar.items() if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+            st.json(safe_sar)
