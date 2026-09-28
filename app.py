@@ -118,6 +118,8 @@ def load_model_artifacts_cached():
         return None, None, None
     _model    = pickle.load(open(MODEL_PATH, "rb"))
     _features = pickle.load(open(FEATURE_PATH, "rb"))
+    _means    = pickle.load(open(MEAN_PATH, "rb"))
+    return _model, _features, _means
 
 
 # ── Module-level SHAP helper — defined here so the cache key is stable ────────
@@ -164,8 +166,6 @@ def _compute_shap_cached(_model_key: str, X_values: "np.ndarray",
         return None, [], f"SHAP ValueError: {e}"
     except Exception as e:
         return None, [], f"SHAP error: {e}"
-    _means    = pickle.load(open(MEAN_PATH, "rb"))
-    return _model, _features, _means
 
 st.sidebar.header("⚙️ Model Controls")
 fn_cost = st.sidebar.number_input("FN Cost ($)", value=5000, step=500)
