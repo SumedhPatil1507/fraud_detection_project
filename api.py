@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from src.config import MODEL_PATH, FEATURE_PATH, MEAN_PATH
+from src.model import safe_predict_proba
 from src.rbac import Role, require_permission
 from src.validation import validate_transaction
 from src.db_async import log_prediction, load_predictions
@@ -168,7 +169,7 @@ async def predict(txn: Transaction, background_tasks: BackgroundTasks,
     try:
         input_df  = build_input(txn)
         threshold = txn.threshold or 0.3
-        prob      = float(_model.predict_proba(input_df)[0][1])
+        prob      = float(safe_predict_proba(_model, input_df)[0][1])
         is_fraud  = prob >= threshold
         shadow_task = asyncio.create_task(shadow_predict_async(_model, input_df, prob, threshold))
         graph_ctx = None
@@ -205,7 +206,7 @@ async def predict_batch(req: BatchRequest, background_tasks: BackgroundTasks,
             return {"error": vr.errors}
         try:
             input_df  = build_input(txn)
-            prob      = float(_model.predict_proba(input_df)[0][1])
+            prob      = float(safe_predict_proba(_model, input_df)[0][1])
             threshold = txn.threshold or 0.3
             is_fraud  = prob >= threshold
             background_tasks.add_task(_bg_log, txn.transaction_amount, txn.distance_from_home_km,
@@ -237,7 +238,7 @@ async def create_sar(txn: Transaction, background_tasks: BackgroundTasks,
     if _model is None:
         raise HTTPException(503, "Model not loaded.")
     input_df = build_input(txn)
-    prob     = float(_model.predict_proba(input_df)[0][1])
+    prob     = float(safe_predict_proba(_model, input_df)[0][1])
     return generate_sar(txn.model_dump(), prob, [], threshold=txn.threshold or 0.3)
 
 

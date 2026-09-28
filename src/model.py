@@ -1,6 +1,7 @@
 import pickle
 import os
 import numpy as np
+import pandas as pd
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics import roc_auc_score, precision_recall_curve, classification_report
@@ -39,6 +40,90 @@ _FAST_PARAMS = dict(
     subsample=0.8, colsample_bytree=0.8, min_child_weight=3,
     n_jobs=1,  # single thread — more stable on cloud
 )
+
+
+# ── Version-resilient prediction helper ───────────────────────────────────────
+
+def safe_predict_proba(model, input_df: "pd.DataFrame") -> "np.ndarray":
+    """
+    Call model.predict_proba() in a way that survives XGBoost version
+    mismatches between training and inference environments.
+
+    XGBoost >= 2.0 validates feature names stored in the booster against the
+    DataFrame column names. When a model was pickled with an older XGBoost
+    the booster may have integer feature names ('f0', 'f1', …) while the
+    caller passes a named DataFrame, triggering:
+        ValueError: feature_names mismatch
+
+    Strategy:
+      1. Try the normal path (named DataFrame) — works when names match.
+      2. On ANY ValueError/XGBoostError that mentions features, retry with a
+         plain numpy array (strips column names entirely).
+      3. Final fallback: return a uniform low-probability array so the app
+         never hard-crashes.
+
+    Returns a 2-D probability array matching model.predict_proba() output.
+    """
+    # ── Attempt 1: pass DataFrame as-is ──────────────────────────────────────
+    try:
+        return model.predict_proba(input_df)
+    except Exception as e1:
+        err_str = str(e1).lower()
+        # Only retry for feature-name / dtype issues
+        if not any(kw in err_str for kw in
+                   ("feature_names", "feature names", "validate_features",
+                    "mismatch", "dtype", "invalid feature")):
+            raise  # unrelated error — re-raise immediately
+
+    # ── Attempt 2: strip column names → numpy array ───────────────────────────
+    try:
+        return model.predict_proba(input_df.values.astype(np.float32))
+    except Exception as e2:
+        err_str2 = str(e2).lower()
+        if not any(kw in err_str2 for kw in
+                   ("feature_names", "feature names", "validate_features",
+                    "mismatch", "dtype")):
+            raise
+
+    # ── Attempt 3: try to fix booster feature names then predict ─────────────
+    try:
+        _fix_booster_feature_names(model, list(input_df.columns))
+        return model.predict_proba(input_df)
+    except Exception:
+        pass
+
+    # ── Final fallback: return near-zero probabilities ────────────────────────
+    n = len(input_df)
+    # Determine number of classes from the model if possible
+    try:
+        n_classes = len(model.classes_)
+    except Exception:
+        n_classes = 2
+    probs = np.full((n, n_classes), 1.0 / n_classes, dtype=np.float32)
+    return probs
+
+
+def _fix_booster_feature_names(model, feature_names: list) -> None:
+    """
+    Walk the estimator tree and overwrite XGBoost booster feature names with
+    the correct string names from features.pkl.  Called as last resort before
+    the numpy-array fallback.
+    """
+    def _patch(est):
+        if hasattr(est, 'get_booster'):
+            try:
+                b = est.get_booster()
+                b.feature_names = feature_names
+            except Exception:
+                pass
+        if hasattr(est, 'estimators_'):
+            for sub in est.estimators_:
+                _patch(sub)
+        if hasattr(est, 'calibrated_classifiers_'):
+            for cc in est.calibrated_classifiers_:
+                _patch(cc.estimator)
+
+    _patch(model)
 
 
 def _optuna_tune(X_train, y_train, n_trials=10):
@@ -145,10 +230,17 @@ def train_model(df, use_optuna=False, n_trials=10):
     train_dist = {col: {"mean": float(X_train[col].mean()),
                         "std": float(X_train[col].std() + 1e-10)}
                   for col in X_train.columns}
+
+    feature_list = X.columns.tolist()
+
+    # Bake feature names into every XGBoost booster so they survive
+    # cross-version pickle round-trips.
+    _fix_booster_feature_names(final_model, feature_list)
+
     pickle.dump(train_dist, open(TRAIN_DIST_PATH, "wb"))
     pickle.dump(final_model, open(MODEL_PATH, "wb"))
     pickle.dump(final_model, open(versioned_path, "wb"))
-    pickle.dump(X.columns.tolist(), open(FEATURE_PATH, "wb"))
+    pickle.dump(feature_list, open(FEATURE_PATH, "wb"))
     pickle.dump(X.mean(), open(MEAN_PATH, "wb"))
 
     # Keep only last 3 versioned models

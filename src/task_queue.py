@@ -16,6 +16,7 @@ import os
 import logging
 from typing import Any, Callable
 from datetime import datetime, timezone
+from src.model import safe_predict_proba
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def _define_tasks():
                 d.update({k: v for k, v in txn.items()})
                 d["amount_log"] = np.log1p(d.get("transaction_amount", 0))
                 input_df = pd.DataFrame([d])[features]
-                prob = float(model.predict_proba(input_df)[0][1])
+                prob = float(safe_predict_proba(model, input_df)[0][1])
                 results.append({
                     "fraud_probability": round(prob, 4),
                     "is_fraud": prob >= 0.3,

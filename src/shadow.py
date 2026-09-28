@@ -13,6 +13,7 @@ from functools import partial
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
+from src.model import safe_predict_proba
 from src.config import MODEL_DIR
 
 SHADOW_LOG = os.path.join(
@@ -34,7 +35,7 @@ def load_shadow_model():
 
 def _run_inference(model, input_df: pd.DataFrame) -> float:
     """CPU-bound inference — safe to run in thread pool."""
-    return float(model.predict_proba(input_df)[0][1])
+    return float(safe_predict_proba(model, input_df)[0][1])
 
 
 def _write_shadow_log(record: dict):

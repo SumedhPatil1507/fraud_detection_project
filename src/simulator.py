@@ -6,6 +6,7 @@ scored in real-time using the trained model.
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from src.model import safe_predict_proba
 
 
 def generate_transaction(rng: np.random.Generator, fraud: bool = False) -> dict:
@@ -58,7 +59,7 @@ def score_transaction(txn: dict, model, features: list,
     input_dict["amount_x_distance"] = txn["transaction_amount"] * txn["distance_from_home_km"]
     try:
         input_df = pd.DataFrame([input_dict])[features]
-        prob = float(model.predict_proba(input_df)[0][1])
+        prob = float(safe_predict_proba(model, input_df)[0][1])
     except Exception:
         prob = 0.0
     risk = "🔴 HIGH" if prob >= 0.7 else "🟡 MEDIUM" if prob >= threshold else "🟢 LOW"
@@ -135,7 +136,7 @@ def score_transaction(txn: dict, model, features: list,
 
     try:
         input_df = pd.DataFrame([input_dict])[features]
-        prob = float(model.predict_proba(input_df)[0][1])
+        prob = float(safe_predict_proba(model, input_df)[0][1])
     except Exception:
         prob = 0.0
 

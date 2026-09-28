@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.pipeline import run_pipeline
-from src.model import train_model
+from src.model import train_model, safe_predict_proba
 from src.business import compute_business_cost
 from src.drift import detect_drift
 from src.simulator import generate_batch, score_transaction
@@ -51,7 +51,16 @@ from src.plots import (
     plot_scatter_risk, plot_anomaly_scatter, plot_shap_bar_interactive,
 )
 
-st.set_page_config(page_title="FraudGuard AI", layout="wide", page_icon="🚨")
+st.set_page_config(
+    page_title="FraudGuard AI — Enterprise Fraud Detection",
+    layout="wide",
+    page_icon="🚨",
+    menu_items={
+        "Get Help": "https://github.com/SumedhPatil1507/fraud_detection_project",
+        "Report a bug": "https://github.com/SumedhPatil1507/fraud_detection_project/issues",
+        "About": "**FraudGuard AI v5.0** — Enterprise Fraud Detection Platform\n\nLangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · Prometheus · DPDP/RBI Compliance",
+    },
+)
 
 st.markdown("""
 <style>
@@ -61,8 +70,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 FraudGuard AI — Enterprise Edition v4.0")
-st.caption("XGBoost · LightGBM · Neo4j Graph · Async PostgreSQL · Celery · S3 · Prometheus · DPDP/RBI Compliance")
+st.title("🚨 FraudGuard AI — Enterprise Fraud Detection Platform v5.0")
+st.caption(
+    "LangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · "
+    "Async PostgreSQL · Celery · S3 · ChromaDB · Prometheus · DPDP/RBI Compliance"
+)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("📂 Data Source")
@@ -342,7 +354,7 @@ with tab_shap:
                 "hour_cos": np.cos(2 * np.pi * s_hour / 24),
             })
             input_df = pd.DataFrame([{f: base_dict.get(f, 0) for f in features}])
-            prob = model.predict_proba(input_df)[0][1]
+            prob = safe_predict_proba(model, input_df)[0][1]
             st.metric("Fraud Probability", f"{prob:.2%}")
 
             if shap_vals is not None:
@@ -445,7 +457,7 @@ with tab_predict:
                 "amount_x_distance": amount * distance,
             })
             input_df = pd.DataFrame([{f: base.get(f, 0) for f in features}])
-            prob = model.predict_proba(input_df)[0][1]
+            prob = safe_predict_proba(model, input_df)[0][1]
             pred = int(prob >= pred_threshold)
             log_prediction(amount, distance, hour, is_foreign,
                            is_new_dev, vpn, prob, bool(pred), pred_threshold)

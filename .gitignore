@@ -2,10 +2,23 @@ venv/
 **/__pycache__/
 *.pyc
 *.pyo
-outputs/
-data/
-model.pkl
-.vscode/
+*.pyo
 .python-version
 *.egg-info/
 .env
+.vscode/
+
+# ── Generated outputs (never commit — must be regenerated on each env) ────────
+outputs/
+outputs/model/
+outputs/plots/
+outputs/sar_reports/
+outputs/chroma_db/
+outputs/shadow_log.csv
+outputs/predictions_audit.csv
+outputs/compliance_report.json
+outputs/fraud_rings.json
+
+# Stale pkl artefacts (replaced by outputs/ rule above, kept explicit for safety)
+*.pkl
+*.pth
