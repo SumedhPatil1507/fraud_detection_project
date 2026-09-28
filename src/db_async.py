@@ -153,32 +153,44 @@ async def log_prediction_async(amount, distance, hour, is_foreign, is_new_device
 def log_prediction(amount, distance, hour, is_foreign, is_new_device,
                    vpn, prob, is_fraud, threshold,
                    graph_risk=0.0, ring_member=False) -> str:
-    """Sync wrapper — runs async log in thread-safe manner."""
+    """Sync wrapper — always writes to CSV in Streamlit context.
+
+    Python 3.10+ deprecated asyncio.get_event_loop() in non-async contexts
+    and 3.12 can raise RuntimeError. In Streamlit (synchronous context) we
+    skip the async path entirely and write directly to CSV, which is fast
+    enough for the UI and avoids asyncio event-loop conflicts.
+    """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Already in async context — schedule as task
-            asyncio.ensure_future(
-                log_prediction_async(amount, distance, hour, is_foreign,
-                                     is_new_device, vpn, prob, is_fraud,
-                                     threshold, graph_risk, ring_member)
-            )
-            return "async_scheduled"
-        else:
-            return loop.run_until_complete(
-                log_prediction_async(amount, distance, hour, is_foreign,
-                                     is_new_device, vpn, prob, is_fraud,
-                                     threshold, graph_risk, ring_member)
-            )
+        # Try the async path only when a running loop already exists
+        # (e.g. when called from FastAPI / api.py)
+        loop = asyncio.get_running_loop()
+        asyncio.ensure_future(
+            log_prediction_async(amount, distance, hour, is_foreign,
+                                 is_new_device, vpn, prob, is_fraud,
+                                 threshold, graph_risk, ring_member)
+        )
+        return "async_scheduled"
+    except RuntimeError:
+        # No running loop — write directly to CSV (Streamlit, CLI, tests)
+        pass
     except Exception:
-        _csv_append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "transaction_amount": amount, "distance_from_home_km": distance,
-            "hour": hour, "is_foreign": is_foreign, "is_new_device": is_new_device,
-            "vpn_detected": vpn, "fraud_probability": prob,
-            "is_fraud": is_fraud, "threshold_used": threshold,
-        })
-        return "csv"
+        pass
+
+    _csv_append({
+        "timestamp":            datetime.now(timezone.utc).isoformat(),
+        "transaction_amount":   round(float(amount), 2),
+        "distance_from_home_km": round(float(distance), 2),
+        "hour":                 int(hour),
+        "is_foreign":           bool(is_foreign),
+        "is_new_device":        bool(is_new_device),
+        "vpn_detected":         bool(vpn),
+        "fraud_probability":    round(float(prob), 4),
+        "is_fraud":             bool(is_fraud),
+        "threshold_used":       round(float(threshold), 3),
+        "graph_risk_score":     round(float(graph_risk), 4),
+        "ring_member":          bool(ring_member),
+    })
+    return "csv"
 
 
 def _csv_append(record: dict):

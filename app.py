@@ -281,9 +281,10 @@ with tab_metrics:
 
         base = st.session_state.model
         fi_model = (base.estimators_[0] if hasattr(base, 'estimators_') else base)
-        if hasattr(fi_model, 'feature_importances_'):
+        X_test_fi = st.session_state.get("X_test")
+        if hasattr(fi_model, 'feature_importances_') and X_test_fi is not None:
             st.plotly_chart(
-                plot_feature_importance(fi_model, st.session_state.X_test.columns.tolist()),
+                plot_feature_importance(fi_model, X_test_fi.columns.tolist()),
                 use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -295,6 +296,7 @@ with tab_shap:
     else:
         model  = st.session_state.model
         X_test = st.session_state.X_test
+        y_test = st.session_state.y_test   # needed for SHAP dependence scatter
         # Unwrap CalibratedClassifierCV → VotingClassifier → XGBClassifier
         _inner = model
         if hasattr(_inner, 'calibrated_classifiers_'):
@@ -892,7 +894,7 @@ with tab_savings:
 
     st.divider()
     st.subheader("🎯 Dynamic Threshold Optimizer")
-    if "probs" in st.session_state:
+    if "probs" in st.session_state and "y_test" in st.session_state:
         y_test = st.session_state.y_test
         probs  = st.session_state.probs
         opt_result = optimize_threshold(

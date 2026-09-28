@@ -50,6 +50,13 @@ def get_top_shap_factors(model, input_df: pd.DataFrame,
         import shap
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(input_df)
+        # SHAP ≥ 0.46 returns an Explanation object — extract the raw array
+        if hasattr(shap_values, 'values'):
+            shap_values = shap_values.values
+        # Binary classifiers may return list [neg_class, pos_class]
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]
+        shap_values = np.array(shap_values)
         vals = shap_values[0] if shap_values.ndim > 1 else shap_values
         indices = np.argsort(np.abs(vals))[-top_n:][::-1]
         return [

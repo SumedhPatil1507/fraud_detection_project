@@ -220,6 +220,12 @@ def plot_anomaly_scatter(anomaly_scores, probs, y_test):
 
 
 def plot_shap_bar_interactive(shap_values, feature_names, top_n=15):
+    # Unwrap SHAP ≥ 0.46 Explanation objects to a plain ndarray
+    if hasattr(shap_values, 'values'):
+        shap_values = shap_values.values
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+    shap_values = np.array(shap_values)
     mean_abs = np.abs(shap_values).mean(axis=0)
     idx = np.argsort(mean_abs)[-top_n:]
     fig = go.Figure(go.Bar(

@@ -233,10 +233,12 @@ def get_live_metrics(audit_df: pd.DataFrame) -> dict:
     if audit_df.empty:
         return {
             "total_predictions": 0,
-            "fraud_rate": 0.0,
-            "avg_probability": 0.0,
-            "p95_probability": 0.0,
-            "p99_probability": 0.0,
+            "fraud_rate":        0.0,
+            "avg_probability":   0.0,
+            "p95_probability":   0.0,
+            "p99_probability":   0.0,
+            "last_hour_count":   0,
+            "last_day_count":    0,
         }
 
     probs = audit_df["fraud_probability"].dropna()

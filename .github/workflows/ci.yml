@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -26,9 +26,13 @@ jobs:
       - name: Install core dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas numpy scikit-learn xgboost lightgbm shap networkx \
-                      cryptography pydantic fastapi httpx requests sqlalchemy asyncpg \
-                      plotly streamlit pytest pytest-cov
+          pip install pandas numpy "scikit-learn>=1.3" "xgboost>=2.0" lightgbm \
+                      "shap>=0.46.0" networkx cryptography pydantic fastapi \
+                      httpx requests "sqlalchemy[asyncio]>=2.0" asyncpg \
+                      plotly streamlit "groq>=0.9" "langgraph>=0.2" \
+                      "langchain-core>=0.3" "sentence-transformers>=3.0" \
+                      "chromadb>=0.5" optuna prometheus-client \
+                      pytest pytest-cov
 
       - name: Syntax check all modules
         run: |
@@ -67,5 +71,10 @@ jobs:
           from src.object_store import get_registry_summary
           from src.task_queue import get_queue_stats
           from src.db_async import log_prediction
+          from src.llm_explain import get_top_shap_factors
+          from src.copilot_metrics import record_agent_run
+          from src.vector_store import get_collection_stats
+          from src.agent_graph import run_copilot
+          from src.model import safe_predict_proba
           print('All imports OK')
           "
