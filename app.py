@@ -58,7 +58,7 @@ st.set_page_config(
     menu_items={
         "Get Help": "https://github.com/SumedhPatil1507/fraud_detection_project",
         "Report a bug": "https://github.com/SumedhPatil1507/fraud_detection_project/issues",
-        "About": "**FraudGuard AI v5.0** — Enterprise Fraud Detection Platform\n\nLangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · Prometheus · DPDP/RBI Compliance",
+        "About": "**FraudGuard AI** — Enterprise Fraud Detection Platform\n\nLangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · Prometheus · DPDP/RBI Compliance",
     },
 )
 
@@ -70,7 +70,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 FraudGuard AI — Enterprise Fraud Detection Platform v5.0")
+st.title("🚨 FraudGuard AI — Enterprise Fraud Detection Platform")
 st.caption(
     "LangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · "
     "Async PostgreSQL · Celery · S3 · ChromaDB · Prometheus · DPDP/RBI Compliance"
@@ -295,7 +295,11 @@ with tab_shap:
     else:
         model  = st.session_state.model
         X_test = st.session_state.X_test
-        xgb_model = (model.estimators_[0] if hasattr(model, 'estimators_') else model)
+        # Unwrap CalibratedClassifierCV → VotingClassifier → XGBClassifier
+        _inner = model
+        if hasattr(_inner, 'calibrated_classifiers_'):
+            _inner = _inner.calibrated_classifiers_[0].estimator
+        xgb_model = (_inner.estimators_[0] if hasattr(_inner, 'estimators_') else _inner)
         X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
 
         st.subheader("Global SHAP Feature Importance")
@@ -305,7 +309,19 @@ with tab_shap:
             try:
                 import shap
                 explainer = shap.TreeExplainer(_m)
-                return explainer.shap_values(_X), _X.columns.tolist()
+                raw = explainer.shap_values(_X)
+                # Newer SHAP returns Explanation objects; extract .values
+                if hasattr(raw, 'values'):
+                    raw = raw.values
+                # For binary classifiers shap_values returns list [neg, pos]
+                if isinstance(raw, list):
+                    raw = raw[1]
+                # Ensure 2-D (samples × features)
+                import numpy as np
+                raw = np.array(raw)
+                if raw.ndim == 1:
+                    raw = raw.reshape(1, -1)
+                return raw, _X.columns.tolist()
             except Exception:
                 return None, None
 
@@ -318,14 +334,14 @@ with tab_shap:
                     plot_shap_bar_interactive(shap_vals, feat_names),
                     use_container_width=True)
             with c2:
-                # SHAP scatter for top feature
-                top_feat_idx = np.abs(shap_vals).mean(axis=0).argmax()
+                top_feat_idx = int(np.abs(shap_vals).mean(axis=0).argmax())
                 top_feat = feat_names[top_feat_idx]
                 shap_df = pd.DataFrame({
                     'Feature Value': X_sample.iloc[:, top_feat_idx].values,
                     'SHAP Value': shap_vals[:, top_feat_idx],
-                    'Actual': y_test.iloc[:len(X_sample)].values
-                    if len(y_test) >= len(X_sample) else np.zeros(len(X_sample))
+                    'Actual': (y_test.iloc[:len(X_sample)].values
+                               if len(y_test) >= len(X_sample)
+                               else np.zeros(len(X_sample)))
                 })
                 fig_dep = px.scatter(shap_df, x='Feature Value', y='SHAP Value',
                                      color='Actual', title=f'SHAP Dependence: {top_feat}',
@@ -342,39 +358,50 @@ with tab_shap:
             s_hour     = c3.number_input("Hour", min_value=0, max_value=23, value=2)
             shap_submit = st.form_submit_button("Explain Prediction")
 
-        if shap_submit and os.path.exists(MEAN_PATH):
+        if shap_submit:
             _, features, means = load_model_artifacts_cached()
-            base_dict = means.to_dict()
-            base_dict.update({
-                "transaction_amount": s_amount,
-                "distance_from_home_km": s_distance,
-                "hour": s_hour,
-                "amount_log": np.log1p(s_amount),
-                "hour_sin": np.sin(2 * np.pi * s_hour / 24),
-                "hour_cos": np.cos(2 * np.pi * s_hour / 24),
-            })
-            input_df = pd.DataFrame([{f: base_dict.get(f, 0) for f in features}])
-            prob = safe_predict_proba(model, input_df)[0][1]
-            st.metric("Fraud Probability", f"{prob:.2%}")
+            if means is None:
+                st.warning("No trained model found. Train the model first (🏋️ Train tab).")
+            else:
+                base_dict = means.to_dict()
+                base_dict.update({
+                    "transaction_amount": s_amount,
+                    "distance_from_home_km": s_distance,
+                    "hour": s_hour,
+                    "amount_log": np.log1p(s_amount),
+                    "hour_sin": np.sin(2 * np.pi * s_hour / 24),
+                    "hour_cos": np.cos(2 * np.pi * s_hour / 24),
+                })
+                input_df = pd.DataFrame([{f: base_dict.get(f, 0) for f in features}])
+                prob = safe_predict_proba(model, input_df)[0][1]
+                st.metric("Fraud Probability", f"{prob:.2%}")
 
-            if shap_vals is not None:
-                try:
-                    import shap
-                    explainer = shap.TreeExplainer(xgb_model)
-                    sv = explainer.shap_values(input_df)[0]
-                    shap_single = pd.DataFrame({
-                        'Feature': features,
-                        'SHAP Value': sv,
-                        'Feature Value': input_df.values[0]
-                    }).sort_values('SHAP Value', key=abs, ascending=False).head(12)
-                    fig_single = px.bar(shap_single, x='SHAP Value', y='Feature',
-                                        orientation='h', color='SHAP Value',
-                                        color_continuous_scale='RdBu_r',
-                                        title='SHAP Waterfall (Single Prediction)',
-                                        hover_data=['Feature Value'])
-                    st.plotly_chart(fig_single, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"SHAP single explanation failed: {e}")
+                if shap_vals is not None:
+                    try:
+                        import shap as _shap
+                        explainer = _shap.TreeExplainer(xgb_model)
+                        raw_sv = explainer.shap_values(input_df)
+                        # Handle Explanation objects and list returns
+                        if hasattr(raw_sv, 'values'):
+                            raw_sv = raw_sv.values
+                        if isinstance(raw_sv, list):
+                            raw_sv = raw_sv[1]
+                        sv = np.array(raw_sv)
+                        if sv.ndim > 1:
+                            sv = sv[0]
+                        shap_single = pd.DataFrame({
+                            'Feature': features,
+                            'SHAP Value': sv,
+                            'Feature Value': input_df.values[0]
+                        }).sort_values('SHAP Value', key=abs, ascending=False).head(12)
+                        fig_single = px.bar(shap_single, x='SHAP Value', y='Feature',
+                                            orientation='h', color='SHAP Value',
+                                            color_continuous_scale='RdBu_r',
+                                            title='SHAP Waterfall (Single Prediction)',
+                                            hover_data=['Feature Value'])
+                        st.plotly_chart(fig_single, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"SHAP single explanation failed: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — DRIFT DETECTION
@@ -442,62 +469,65 @@ with tab_predict:
             submitted  = st.form_submit_button("🔍 Score Transaction", type="primary")
 
         if submitted:
-            base = means.to_dict()
-            base.update({
-                "transaction_amount": amount,
-                "distance_from_home_km": distance,
-                "hour": hour,
-                "amount_log": np.log1p(amount),
-                "hour_sin": np.sin(2 * np.pi * hour / 24),
-                "hour_cos": np.cos(2 * np.pi * hour / 24),
-                "is_foreign": is_foreign,
-                "is_new_device": is_new_dev,
-                "vpn_detected": vpn,
-                "amount_vs_avg": amount / (base.get("avg_amount_30d", amount) + 1),
-                "amount_x_distance": amount * distance,
-            })
-            input_df = pd.DataFrame([{f: base.get(f, 0) for f in features}])
-            prob = safe_predict_proba(model, input_df)[0][1]
-            pred = int(prob >= pred_threshold)
-            log_prediction(amount, distance, hour, is_foreign,
-                           is_new_dev, vpn, prob, bool(pred), pred_threshold)
-
-            # Gauge chart
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
-                value=prob * 100,
-                title={'text': "Fraud Risk Score"},
-                delta={'reference': pred_threshold * 100},
-                gauge={
-                    'axis': {'range': [0, 100]},
-                    'bar': {'color': '#e74c3c' if pred else '#2ecc71'},
-                    'steps': [
-                        {'range': [0, 30], 'color': '#d5f5e3'},
-                        {'range': [30, 60], 'color': '#fdebd0'},
-                        {'range': [60, 100], 'color': '#fadbd8'},
-                    ],
-                    'threshold': {'line': {'color': 'red', 'width': 4},
-                                  'thickness': 0.75, 'value': pred_threshold * 100}
-                }
-            ))
-            fig_gauge.update_layout(height=300)
-            st.plotly_chart(fig_gauge, use_container_width=True)
-
-            if pred == 1:
-                st.error("🚨 HIGH RISK — Likely Fraud")
-                add_to_review_queue(
-                    {"transaction_amount": amount, "distance_from_home_km": distance,
-                     "hour": hour}, prob, "Auto-flagged by model")
-                st.warning("⚠️ Added to HITL review queue.")
+            if means is None:
+                st.error("Model artifacts not found. Train the model first.")
             else:
-                st.success("✅ LOW RISK — Likely Legitimate")
+                base = means.to_dict()
+                base.update({
+                    "transaction_amount": amount,
+                    "distance_from_home_km": distance,
+                    "hour": hour,
+                    "amount_log": np.log1p(amount),
+                    "hour_sin": np.sin(2 * np.pi * hour / 24),
+                    "hour_cos": np.cos(2 * np.pi * hour / 24),
+                    "is_foreign": is_foreign,
+                    "is_new_device": is_new_dev,
+                    "vpn_detected": vpn,
+                    "amount_vs_avg": amount / (base.get("avg_amount_30d", amount) + 1),
+                    "amount_x_distance": amount * distance,
+                })
+                input_df = pd.DataFrame([{f: base.get(f, 0) for f in features}])
+                prob = safe_predict_proba(model, input_df)[0][1]
+                pred = int(prob >= pred_threshold)
+                log_prediction(amount, distance, hour, is_foreign,
+                               is_new_dev, vpn, prob, bool(pred), pred_threshold)
 
-            st.code(
-                f'curl -X POST http://localhost:8000/predict \\\n'
-                f'  -H "Content-Type: application/json" \\\n'
-                f'  -d \'{{"transaction_amount": {amount}, '
-                f'"distance_from_home_km": {distance}, "hour": {hour}, '
-                f'"threshold": {pred_threshold}}}\'', language="bash")
+                # Gauge chart
+                fig_gauge = go.Figure(go.Indicator(
+                    mode="gauge+number+delta",
+                    value=prob * 100,
+                    title={'text': "Fraud Risk Score"},
+                    delta={'reference': pred_threshold * 100},
+                    gauge={
+                        'axis': {'range': [0, 100]},
+                        'bar': {'color': '#e74c3c' if pred else '#2ecc71'},
+                        'steps': [
+                            {'range': [0, 30], 'color': '#d5f5e3'},
+                            {'range': [30, 60], 'color': '#fdebd0'},
+                            {'range': [60, 100], 'color': '#fadbd8'},
+                        ],
+                        'threshold': {'line': {'color': 'red', 'width': 4},
+                                      'thickness': 0.75, 'value': pred_threshold * 100}
+                    }
+                ))
+                fig_gauge.update_layout(height=300)
+                st.plotly_chart(fig_gauge, use_container_width=True)
+
+                if pred == 1:
+                    st.error("🚨 HIGH RISK — Likely Fraud")
+                    add_to_review_queue(
+                        {"transaction_amount": amount, "distance_from_home_km": distance,
+                         "hour": hour}, prob, "Auto-flagged by model")
+                    st.warning("⚠️ Added to HITL review queue.")
+                else:
+                    st.success("✅ LOW RISK — Likely Legitimate")
+
+                st.code(
+                    f'curl -X POST http://localhost:8000/predict \\\n'
+                    f'  -H "Content-Type: application/json" \\\n'
+                    f'  -d \'{{"transaction_amount": {amount}, '
+                    f'"distance_from_home_km": {distance}, "hour": {hour}, '
+                    f'"threshold": {pred_threshold}}}\'', language="bash")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7 — LIVE TRANSACTION STREAM
