@@ -50,6 +50,7 @@ from src.plots import (
     plot_velocity_heatmap, plot_fraud_by_hour, plot_fraud_by_channel,
     plot_scatter_risk, plot_anomaly_scatter, plot_shap_bar_interactive,
 )
+from src.shap_utils import plot_shap_summary, plot_shap_beeswarm, plot_waterfall
 
 st.set_page_config(
     page_title="FraudGuard AI — Enterprise Fraud Detection",
@@ -117,6 +118,52 @@ def load_model_artifacts_cached():
         return None, None, None
     _model    = pickle.load(open(MODEL_PATH, "rb"))
     _features = pickle.load(open(FEATURE_PATH, "rb"))
+
+
+# ── Module-level SHAP helper — defined here so the cache key is stable ────────
+@st.cache_data(show_spinner="Computing SHAP values…", ttl=3600)
+def _compute_shap_cached(_model_key: str, X_values: "np.ndarray",
+                          feat_cols: list) -> "tuple[np.ndarray | None, list, str]":
+    """
+    Compute SHAP values and return (shap_array, feature_names, error_msg).
+    Uses st.cache_data (not cache_resource) so results are properly keyed.
+    _model_key is just used as a hash discriminator — the actual model is
+    retrieved from session_state inside the tab block.
+    Returns error_msg='' on success, otherwise a descriptive string.
+    """
+    try:
+        import shap as _shap
+        import pickle, os
+        from src.config import MODEL_PATH
+        if not os.path.exists(MODEL_PATH):
+            return None, [], "No model.pkl found — train the model first."
+        model = pickle.load(open(MODEL_PATH, "rb"))
+        # Unwrap CalibratedClassifierCV → VotingClassifier → XGBClassifier
+        inner = model
+        if hasattr(inner, "calibrated_classifiers_"):
+            inner = inner.calibrated_classifiers_[0].estimator
+        xgb = inner.estimators_[0] if hasattr(inner, "estimators_") else inner
+        explainer = _shap.TreeExplainer(xgb)
+        X_df = pd.DataFrame(X_values, columns=feat_cols)
+        raw  = explainer.shap_values(X_df)
+        if hasattr(raw, "values"):
+            raw = raw.values
+        if isinstance(raw, list):
+            raw = raw[1]
+        arr = np.array(raw)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        return arr, feat_cols, ""
+    except ValueError as e:
+        if "base_score" in str(e) or "could not convert" in str(e):
+            return None, [], (
+                "The stored model was trained with an older XGBoost version that "
+                "is incompatible with the current SHAP. "
+                "**Re-train the model** (🏋️ Train tab) to fix this."
+            )
+        return None, [], f"SHAP ValueError: {e}"
+    except Exception as e:
+        return None, [], f"SHAP error: {e}"
     _means    = pickle.load(open(MEAN_PATH, "rb"))
     return _model, _features, _means
 
@@ -292,118 +339,182 @@ with tab_metrics:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_shap:
     if "model" not in st.session_state:
-        st.info("Train the model first.")
+        st.info("Train the model first (🏋️ Train tab).")
     else:
-        model  = st.session_state.model
-        X_test = st.session_state.X_test
-        y_test = st.session_state.y_test   # needed for SHAP dependence scatter
-        # Unwrap CalibratedClassifierCV → VotingClassifier → XGBClassifier
-        _inner = model
-        if hasattr(_inner, 'calibrated_classifiers_'):
-            _inner = _inner.calibrated_classifiers_[0].estimator
-        xgb_model = (_inner.estimators_[0] if hasattr(_inner, 'estimators_') else _inner)
-        X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
+        _shap_model = st.session_state.model
+        _shap_Xtest = st.session_state.X_test
+        y_test      = st.session_state.y_test
 
+        # Unwrap CalibratedClassifierCV → inner estimator for TreeExplainer
+        _inner = _shap_model
+        if hasattr(_inner, "calibrated_classifiers_"):
+            _inner = _inner.calibrated_classifiers_[0].estimator
+        xgb_model = (_inner.estimators_[0] if hasattr(_inner, "estimators_") else _inner)
+
+        X_sample    = _shap_Xtest.sample(min(100, len(_shap_Xtest)), random_state=42)
+        feat_cols   = X_sample.columns.tolist()
+        model_key   = str(id(_shap_model))          # stable-ish cache discriminator
+
+        # Use the module-level cached function (stable cache key)
+        shap_vals, _, shap_err = _compute_shap_cached(
+            model_key, X_sample.values, feat_cols
+        )
+
+        # ── Global importance ─────────────────────────────────────────────────
         st.subheader("Global SHAP Feature Importance")
 
-        @st.cache_resource(show_spinner="Computing SHAP values...")
-        def compute_shap(_m, _X):
-            try:
-                import shap
-                explainer = shap.TreeExplainer(_m)
-                raw = explainer.shap_values(_X)
-                # Newer SHAP returns Explanation objects; extract .values
-                if hasattr(raw, 'values'):
-                    raw = raw.values
-                # For binary classifiers shap_values returns list [neg, pos]
-                if isinstance(raw, list):
-                    raw = raw[1]
-                # Ensure 2-D (samples × features)
-                import numpy as np
-                raw = np.array(raw)
-                if raw.ndim == 1:
-                    raw = raw.reshape(1, -1)
-                return raw, _X.columns.tolist()
-            except Exception:
-                return None, None
-
-        shap_vals, feat_names = compute_shap(xgb_model, X_sample)
-
-        if shap_vals is not None:
+        if shap_vals is None:
+            st.error(shap_err or "SHAP unavailable.")
+            st.info(
+                "This usually means the saved model pkl was built with a different "
+                "XGBoost/SHAP version. Re-train the model in the **🏋️ Train** tab, "
+                "then return here."
+            )
+            if st.button("🔄 Clear SHAP cache & retry", key="refresh_shap"):
+                st.cache_data.clear()
+                st.rerun()
+        else:
             c1, c2 = st.columns(2)
             with c1:
-                st.plotly_chart(
-                    plot_shap_bar_interactive(shap_vals, feat_names),
-                    use_container_width=True)
-            with c2:
-                top_feat_idx = int(np.abs(shap_vals).mean(axis=0).argmax())
-                top_feat = feat_names[top_feat_idx]
-                shap_df = pd.DataFrame({
-                    'Feature Value': X_sample.iloc[:, top_feat_idx].values,
-                    'SHAP Value': shap_vals[:, top_feat_idx],
-                    'Actual': (y_test.iloc[:len(X_sample)].values
-                               if len(y_test) >= len(X_sample)
-                               else np.zeros(len(X_sample)))
-                })
-                fig_dep = px.scatter(shap_df, x='Feature Value', y='SHAP Value',
-                                     color='Actual', title=f'SHAP Dependence: {top_feat}',
-                                     color_continuous_scale='RdYlGn_r', opacity=0.7)
-                st.plotly_chart(fig_dep, use_container_width=True)
-        else:
-            st.warning("SHAP unavailable — install shap>=0.46.0")
+                # Bar chart — mean |SHAP| per feature
+                mean_abs   = np.abs(shap_vals).mean(axis=0)
+                top_n      = 15
+                idx_top    = np.argsort(mean_abs)[-top_n:]
+                bar_fig    = go.Figure(go.Bar(
+                    x=mean_abs[idx_top],
+                    y=[feat_cols[i] for i in idx_top],
+                    orientation='h',
+                    marker=dict(
+                        color=mean_abs[idx_top],
+                        colorscale='Purples',
+                        showscale=True,
+                        colorbar=dict(title="Mean |SHAP|"),
+                    ),
+                    hovertemplate="<b>%{y}</b><br>Mean |SHAP| = %{x:.4f}<extra></extra>",
+                ))
+                bar_fig.update_layout(
+                    title=f"Top {top_n} Features — Mean |SHAP|",
+                    xaxis_title="Mean |SHAP Value|",
+                    height=480, margin=dict(l=160),
+                )
+                st.plotly_chart(bar_fig, use_container_width=True)
 
-        st.subheader("Single Prediction Explanation")
+            with c2:
+                # SHAP dependence scatter for the top feature
+                top_feat_idx = int(np.abs(shap_vals).mean(axis=0).argmax())
+                top_feat     = feat_cols[top_feat_idx]
+                dep_df = pd.DataFrame({
+                    "Feature Value": X_sample.iloc[:, top_feat_idx].values,
+                    "SHAP Value":    shap_vals[:, top_feat_idx],
+                    "Actual":        (y_test.iloc[:len(X_sample)].values
+                                      if len(y_test) >= len(X_sample)
+                                      else np.zeros(len(X_sample))),
+                })
+                dep_fig = px.scatter(
+                    dep_df, x="Feature Value", y="SHAP Value", color="Actual",
+                    title=f"SHAP Dependence — {top_feat}",
+                    color_continuous_scale="RdYlGn_r", opacity=0.75,
+                    hover_data=["Feature Value"],
+                )
+                dep_fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                st.plotly_chart(dep_fig, use_container_width=True)
+
+            # ── Beeswarm ──────────────────────────────────────────────────────
+            st.subheader("SHAP Beeswarm — Feature Impact Distribution")
+            bees_top = 12
+            bees_idx = np.argsort(np.abs(shap_vals).mean(axis=0))[-bees_top:][::-1]
+            bees_rows = []
+            for fi in bees_idx:
+                fname = feat_cols[fi]
+                for si in range(len(X_sample)):
+                    bees_rows.append({
+                        "Feature":       fname,
+                        "SHAP Value":    float(shap_vals[si, fi]),
+                        "Feature Value": float(X_sample.iloc[si, fi]),
+                    })
+            bees_df  = pd.DataFrame(bees_rows)
+            bees_fig = px.strip(
+                bees_df, x="SHAP Value", y="Feature", color="Feature Value",
+                color_continuous_scale="RdBu_r", orientation="h",
+                title=f"SHAP Beeswarm (Top {bees_top} Features)",
+                hover_data=["Feature Value"],
+            )
+            bees_fig.update_traces(marker=dict(size=4, opacity=0.7))
+            bees_fig.update_layout(
+                height=max(460, bees_top * 34),
+                margin=dict(l=180),
+                coloraxis_colorbar=dict(title="Feature Value"),
+            )
+            bees_fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
+            st.plotly_chart(bees_fig, use_container_width=True)
+
+        # ── Single prediction waterfall ───────────────────────────────────────
+        st.subheader("Single Prediction — SHAP Waterfall")
         with st.form("shap_form"):
             c1, c2, c3 = st.columns(3)
-            s_amount   = c1.number_input("Amount ($)", value=1500.0)
+            s_amount   = c1.number_input("Amount ($)",   value=1500.0)
             s_distance = c2.number_input("Distance (km)", value=300.0)
-            s_hour     = c3.number_input("Hour", min_value=0, max_value=23, value=2)
-            shap_submit = st.form_submit_button("Explain Prediction")
+            s_hour     = c3.number_input("Hour",          min_value=0, max_value=23, value=2)
+            shap_submit = st.form_submit_button("Explain Prediction", type="primary")
 
         if shap_submit:
             _, features, means = load_model_artifacts_cached()
             if means is None:
-                st.warning("No trained model found. Train the model first (🏋️ Train tab).")
+                st.warning("No trained model found. Train the model first.")
             else:
                 base_dict = means.to_dict()
                 base_dict.update({
-                    "transaction_amount": s_amount,
+                    "transaction_amount":    s_amount,
                     "distance_from_home_km": s_distance,
-                    "hour": s_hour,
-                    "amount_log": np.log1p(s_amount),
-                    "hour_sin": np.sin(2 * np.pi * s_hour / 24),
-                    "hour_cos": np.cos(2 * np.pi * s_hour / 24),
+                    "hour":                  s_hour,
+                    "amount_log":            np.log1p(s_amount),
+                    "hour_sin":              np.sin(2 * np.pi * s_hour / 24),
+                    "hour_cos":              np.cos(2 * np.pi * s_hour / 24),
                 })
                 input_df = pd.DataFrame([{f: base_dict.get(f, 0) for f in features}])
-                prob = safe_predict_proba(model, input_df)[0][1]
-                st.metric("Fraud Probability", f"{prob:.2%}")
+                prob     = safe_predict_proba(_shap_model, input_df)[0][1]
 
-                if shap_vals is not None:
-                    try:
-                        import shap as _shap
-                        explainer = _shap.TreeExplainer(xgb_model)
-                        raw_sv = explainer.shap_values(input_df)
-                        # Handle Explanation objects and list returns
-                        if hasattr(raw_sv, 'values'):
-                            raw_sv = raw_sv.values
-                        if isinstance(raw_sv, list):
-                            raw_sv = raw_sv[1]
-                        sv = np.array(raw_sv)
-                        if sv.ndim > 1:
-                            sv = sv[0]
-                        shap_single = pd.DataFrame({
-                            'Feature': features,
-                            'SHAP Value': sv,
-                            'Feature Value': input_df.values[0]
-                        }).sort_values('SHAP Value', key=abs, ascending=False).head(12)
-                        fig_single = px.bar(shap_single, x='SHAP Value', y='Feature',
-                                            orientation='h', color='SHAP Value',
-                                            color_continuous_scale='RdBu_r',
-                                            title='SHAP Waterfall (Single Prediction)',
-                                            hover_data=['Feature Value'])
-                        st.plotly_chart(fig_single, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"SHAP single explanation failed: {e}")
+                c_prob, c_verdict = st.columns(2)
+                c_prob.metric("Fraud Probability", f"{prob:.2%}")
+                c_verdict.metric("Verdict",
+                                 "🔴 HIGH RISK" if prob >= 0.3 else "🟢 LOW RISK")
+
+                # Interactive Plotly waterfall
+                wf_fig = plot_waterfall(xgb_model, input_df)
+                st.plotly_chart(wf_fig, use_container_width=True)
+
+                # Signed-SHAP bar (shows direction, not just magnitude)
+                try:
+                    import shap as _shap_lib
+                    _exp = _shap_lib.TreeExplainer(xgb_model)
+                    _raw = _exp.shap_values(input_df)
+                    if hasattr(_raw, "values"):
+                        _raw = _raw.values
+                    if isinstance(_raw, list):
+                        _raw = _raw[1]
+                    sv_row = np.array(_raw)
+                    if sv_row.ndim > 1:
+                        sv_row = sv_row[0]
+
+                    single_df = pd.DataFrame({
+                        "Feature":       features,
+                        "SHAP Value":    sv_row,
+                        "Feature Value": input_df.values[0],
+                    }).sort_values("SHAP Value", key=abs, ascending=False).head(14)
+
+                    signed_fig = px.bar(
+                        single_df, x="SHAP Value", y="Feature",
+                        orientation="h", color="SHAP Value",
+                        color_continuous_scale="RdBu_r",
+                        title="SHAP Signed Impact (Single Prediction)",
+                        hover_data=["Feature Value"],
+                    )
+                    signed_fig.add_vline(x=0, line_dash="dash",
+                                         line_color="gray", opacity=0.5)
+                    signed_fig.update_layout(height=480, margin=dict(l=180))
+                    st.plotly_chart(signed_fig, use_container_width=True)
+                except Exception as e:
+                    st.info(f"Signed-SHAP bar unavailable: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — DRIFT DETECTION
