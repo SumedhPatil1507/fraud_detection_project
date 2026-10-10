@@ -32,6 +32,8 @@ jobs:
                       plotly streamlit "groq>=0.9" "langgraph>=0.2" \
                       "langchain-core>=0.3" "sentence-transformers>=3.0" \
                       "chromadb>=0.5" optuna prometheus-client \
+                      "feast[redis]>=0.40,<0.60" \
+                      "guardrails-ai>=0.6,<1.0" "guardrails-ai-valid-length>=0.4" \
                       pytest pytest-cov
 
       - name: Syntax check all modules
