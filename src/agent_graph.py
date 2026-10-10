@@ -84,6 +84,8 @@ from src.graph_intelligence import (
 from src.llm_explain import get_top_shap_factors
 from src.sar import generate_sar, SAR_DIR
 from src.hitl import add_to_review_queue
+from src.copilot_guardrails import validate_sar_narrative
+from src.telemetry import span, traced
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +149,10 @@ class CopilotState(TypedDict, total=False):
     # ── writer output ─────────────────────────────────────────────────────────
     sar_draft:          dict           # full SAR JSON dict, status=DRAFT
     narrative:          str            # AI-enriched narrative
+    writer_validation_status: str
+    writer_validation_errors: list
+    writer_compliance_checks: dict
+    writer_fallback_reason: str
 
     # ── HITL bookkeeping ──────────────────────────────────────────────────────
     hitl_item_index:    int | None
@@ -157,6 +163,7 @@ class CopilotState(TypedDict, total=False):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @instrument_agent("retriever")
+@traced("copilot.node.retriever")
 def retriever_node(state: CopilotState) -> CopilotState:
     """
     Semantic search over audit log + past SARs to surface the most similar
@@ -247,6 +254,32 @@ def _query_graph_intel(txn: dict) -> tuple[dict, list]:
         (r.get("fraud_rate", 0) for r in matching_rings), default=0.0
     )
 
+    # Prefer trained graph scores when available; keep the current graph
+    # heuristic as a graceful fallback for deployments without GNN properties.
+    try:
+        from src.graph_neo4j import get_graph_adapter
+        adapter = get_graph_adapter()
+        if adapter.backend == "neo4j":
+            with span("copilot.tool.gnn_score_lookup") as gnn_span:
+                gnn_scores = adapter.get_gnn_scores(
+                    customer_id, merchant_id, txn.get("transaction_id")
+                )
+                if gnn_span is not None:
+                    gnn_span.set_attribute("gnn.score_available", bool(gnn_scores))
+            if gnn_scores:
+                graph_score.update(gnn_scores)
+                components = [gnn_scores[key] for key in
+                              ("gnn_collusion_risk", "gnn_transaction_probability")
+                              if key in gnn_scores]
+                graph_score["primary_collusion_score"] = max(components, default=0.0)
+                graph_score["gnn_signal_active"] = True
+                graph_score["ring_member"] = int(
+                    bool(graph_score.get("ring_member"))
+                    or graph_score["primary_collusion_score"] >= 0.7
+                )
+    except Exception as exc:
+        log.debug("[tool_agent] stored GNN score unavailable: %s", exc)
+
     return graph_score, matching_rings
 
 
@@ -272,6 +305,7 @@ def _query_shap(state: CopilotState) -> list[dict]:
 
 
 @instrument_agent("tool")
+@traced("copilot.node.tool")
 def tool_node(state: CopilotState) -> CopilotState:
     """
     Tool-calling agent — dispatches two tools in sequence:
@@ -325,6 +359,8 @@ the ML evidence and any relevant historical precedents.
 
 Guidelines:
 - Be concise, factual, and professional (3-5 paragraphs).
+- Every factual sentence must end with citations in the form [chunk_id:<exact retrieved ID>].
+- Cite only IDs and facts present in the supplied historical precedent cases.
 - Open with the transaction verdict and fraud probability.
 - Paragraph 2: summarise the top SHAP feature drivers.
 - Paragraph 3: summarise the graph-intelligence findings (ring membership,
@@ -359,7 +395,7 @@ def _build_writer_prompt(state: CopilotState) -> str:
     )
 
     precedent_text = "\n".join(
-        f"  [{i+1}] {h['source'].upper()} id={h['id']} "
+        f"  [{i+1}] {h['source'].upper()} [chunk_id:{h['id']}] "
         f"(similarity={h['score']:.3f}): {h['text'][:200]}..."
         for i, h in enumerate(cases[:3])
     ) or "  No historical precedents found in vector store."
@@ -379,6 +415,8 @@ VPN detected:     {'Yes' if txn.get('vpn_detected') else 'No'}
 
 === GRAPH INTELLIGENCE ===
   Graph risk score: {graph.get('graph_risk_score', 0):.4f}
+  Primary GNN collusion score: {graph.get('primary_collusion_score', 'unavailable')}
+  GNN transaction fraud probability: {graph.get('gnn_transaction_probability', 'unavailable')}
   Customer degree:  {graph.get('customer_degree', 0)}
   Merchant degree:  {graph.get('merchant_degree', 0)}
 {ring_text}
@@ -452,7 +490,14 @@ def _fallback_narrative(state: CopilotState) -> str:
     )
 
 
+def _candidate_narrative(state: CopilotState) -> str:
+    with span("copilot.writer.generation"):
+        narrative = _llm_narrative(_build_writer_prompt(state))
+    return narrative if narrative else _fallback_narrative(state)
+
+
 @instrument_agent("writer")
+@traced("copilot.node.writer")
 def writer_node(state: CopilotState) -> CopilotState:
     """
     Writer agent — drafts the SAR narrative, enriches it with LLM prose
@@ -464,13 +509,25 @@ def writer_node(state: CopilotState) -> CopilotState:
     shap  = state.get("shap_factors", [])
 
     # ── Build AI-enriched narrative ───────────────────────────────────────────
-    prompt    = _build_writer_prompt(state)
-    narrative = _llm_narrative(prompt)
-    if narrative is None:
-        narrative = _fallback_narrative(state)
-        log.info("[writer_agent] used fallback narrative")
-    else:
-        log.info("[writer_agent] LLM narrative generated (%d chars)", len(narrative))
+    narrative = _candidate_narrative(state)
+    validation = validate_sar_narrative(
+        narrative, state.get("retrieved_cases", []), txn
+    )
+    with span("copilot.writer.guardrail_validation") as guard_span:
+        if guard_span is not None:
+            guard_span.set_attribute("guardrail.valid", validation["valid"])
+            guard_span.set_attribute("guardrail.error_count", len(validation["errors"]))
+            guard_span.set_attribute("guardrail.narrative_characters", len(narrative))
+    if not validation["valid"]:
+        record_sar_draft("rejected")
+        log.warning("[writer_agent] blocked unverified SAR narrative: %s",
+                    "; ".join(validation["errors"]))
+        return {
+            **state, "sar_draft": {}, "narrative": "",
+            "writer_validation_status": "rejected",
+            "writer_validation_errors": validation["errors"],
+            "writer_compliance_checks": validation["checks"],
+        }
 
     # ── Generate the SAR (calls sar.generate_sar, saves to disk) ─────────────
     try:
@@ -489,6 +546,9 @@ def writer_node(state: CopilotState) -> CopilotState:
             if cases else "No historical precedents found."
         )
         analyst_notes = ring_note + prec_note
+        principal_reason = str(txn.get("principal_officer_reason", "")).strip()
+        if principal_reason:
+            analyst_notes += f" Principal Officer reason: {principal_reason}."
 
         sar_draft = generate_sar(
             transaction=txn,
@@ -502,6 +562,8 @@ def writer_node(state: CopilotState) -> CopilotState:
         sar_draft["narrative"] = narrative
         sar_draft["status"]    = "DRAFT"
         sar_draft["copilot_generated"] = True
+        sar_draft["guardrail_status"] = "passed"
+        sar_draft["compliance_checks"] = validation["checks"]
 
         # Persist the enriched version back to disk
         import json
@@ -513,17 +575,43 @@ def writer_node(state: CopilotState) -> CopilotState:
         log.info("[writer_agent] SAR draft saved: %s", sar_draft["sar_id"])
 
     except Exception as exc:
-        log.error("[writer_agent] generate_sar failed: %s", exc)
+        log.error("[writer_agent] generate_sar failed (%s)", type(exc).__name__)
         record_sar_draft("error")
-        # Minimal stub so downstream HITL enqueue doesn't crash
-        sar_draft = {
-            "sar_id":    "SAR-ERROR",
-            "status":    "DRAFT",
-            "narrative": narrative,
-            "error":     str(exc),
+        return {
+            **state, "sar_draft": {}, "narrative": "",
+            "writer_validation_status": "rejected",
+            "writer_validation_errors": [f"SAR generation failed ({type(exc).__name__})"],
+            "writer_compliance_checks": validation["checks"],
         }
 
-    return {**state, "sar_draft": sar_draft, "narrative": narrative}
+    return {**state, "sar_draft": sar_draft, "narrative": narrative,
+            "writer_validation_status": "passed", "writer_validation_errors": [],
+            "writer_compliance_checks": validation["checks"]}
+
+
+@traced("copilot.node.writer_fallback")
+def writer_fallback_node(state: CopilotState) -> CopilotState:
+    """Withhold a rejected narrative and transition to mandatory human review."""
+    txn = state.get("transaction", {})
+    transaction_id = str(txn.get("transaction_id", "unidentified"))
+    reason = "; ".join(state.get("writer_validation_errors", [])) or "writer output was not verified"
+    safe_message = (
+        "Automated SAR narrative withheld because the generated assertions did not pass "
+        "citation, grounding, or statutory validation. Analyst review is required before "
+        "the SAR narrative can be completed."
+    )
+    sar_draft = {
+        "sar_id": f"SAR-REVIEW-{transaction_id}",
+        "status": "REVIEW_REQUIRED",
+        "narrative": safe_message,
+        "guardrail_status": "rejected",
+        "requires_manual_review": True,
+        "guardrail_errors": state.get("writer_validation_errors", []),
+        "compliance_checks": state.get("writer_compliance_checks", {}),
+    }
+    return {**state, "sar_draft": sar_draft, "narrative": safe_message,
+            "writer_validation_status": "fallback_review_required",
+            "writer_fallback_reason": reason}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -531,6 +619,7 @@ def writer_node(state: CopilotState) -> CopilotState:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @instrument_agent("hitl_router")
+@traced("copilot.node.hitl_router")
 def hitl_router_node(state: CopilotState) -> CopilotState:
     """
     Routes the SAR draft to the existing HITL review queue instead of
@@ -556,7 +645,9 @@ def hitl_router_node(state: CopilotState) -> CopilotState:
     reason = (
         f"Copilot draft {sar_id}. "
         f"{ring_note}{prec_note}"
-        f"Graph risk={graph.get('graph_risk_score', 0):.4f}."
+        f"Graph risk={graph.get('graph_risk_score', 0):.4f}. "
+        f"Writer status={state.get('writer_validation_status', 'unknown')}. "
+        f"{state.get('writer_fallback_reason', '')}"
     )
 
     try:
@@ -590,16 +681,25 @@ def _build_graph() -> "StateGraph | None":
     builder.add_node("retriever",    retriever_node)
     builder.add_node("tool",         tool_node)
     builder.add_node("writer",       writer_node)
+    builder.add_node("writer_fallback", writer_fallback_node)
     builder.add_node("hitl_router",  hitl_router_node)
 
     # Linear edges: retriever → tool → writer → hitl_router → END
     builder.set_entry_point("retriever")
     builder.add_edge("retriever",   "tool")
     builder.add_edge("tool",        "writer")
-    builder.add_edge("writer",      "hitl_router")
+    builder.add_conditional_edges(
+        "writer", _writer_route,
+        {"verified": "hitl_router", "fallback": "writer_fallback"},
+    )
+    builder.add_edge("writer_fallback", "hitl_router")
     builder.add_edge("hitl_router", END)
 
     return builder.compile()
+
+
+def _writer_route(state: CopilotState) -> str:
+    return "verified" if state.get("writer_validation_status") == "passed" else "fallback"
 
 
 # Module-level compiled graph (lazy initialisation — compiled on first call)
@@ -624,11 +724,20 @@ def _run_linear(initial_state: CopilotState) -> CopilotState:
     behaviour is identical.
     """
     state = initial_state.copy()
-    for node_fn in (retriever_node, tool_node, writer_node, hitl_router_node):
+    for node_fn in (retriever_node, tool_node, writer_node):
         try:
             state = node_fn(state)
         except Exception as exc:
             log.error("[linear_fallback] node %s raised: %s", node_fn.__name__, exc)
+            if node_fn is writer_node:
+                state["writer_validation_status"] = "rejected"
+                state["writer_validation_errors"] = [str(exc)]
+    if state.get("writer_validation_status") != "passed":
+        state = writer_fallback_node(state)
+    try:
+        state = hitl_router_node(state)
+    except Exception as exc:
+        log.error("[linear_fallback] node hitl_router_node raised: %s", exc)
     return state
 
 
@@ -687,6 +796,10 @@ def run_copilot(
         "shap_factors":      [],
         "sar_draft":         {},
         "narrative":         "",
+        "writer_validation_status": "pending",
+        "writer_validation_errors": [],
+        "writer_compliance_checks": {},
+        "writer_fallback_reason": "",
         "hitl_item_index":   None,
     }
 

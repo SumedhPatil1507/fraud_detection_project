@@ -99,6 +99,86 @@ class GraphAdapter:
         if self._backend == "neo4j" and self._driver:
             self._neo4j_upsert(customer_id, merchant_id, amount, is_fraud)
 
+    def write_gnn_outputs(self, df: pd.DataFrame, node_outputs: dict,
+                          edge_outputs: list[dict]) -> None:
+        """Persist heterogeneous entities, relations, embeddings and scores."""
+        if self._backend != "neo4j" or not self._driver:
+            raise RuntimeError("GNN output persistence requires a live Neo4j backend")
+        with self._driver.session() as session:
+            session.run("""
+                UNWIND $rows AS row
+                MERGE (n:Customer {id: row.id})
+                SET n.total_amount = row.amount, n.degree = row.degree
+            """, rows=_neo4j_node_rows(df, "customer"))
+            session.run("""
+                UNWIND $rows AS row
+                MERGE (n:Merchant {id: row.id})
+                SET n.total_amount = row.amount, n.degree = row.degree
+            """, rows=_neo4j_node_rows(df, "merchant"))
+
+            device_rows = _neo4j_link_rows(df, "device_id")
+            ip_rows = _neo4j_link_rows(df, "ip_address")
+            session.run("""
+                UNWIND $rows AS row
+                MERGE (c:Customer {id: row.customer_id})
+                MERGE (d:Device {id: row.value})
+                MERGE (c)-[:SHARED_DEVICE]->(d)
+            """, rows=device_rows)
+            session.run("""
+                UNWIND $rows AS row
+                MERGE (c:Customer {id: row.customer_id})
+                MERGE (ip:IPAddress {id: row.value})
+                MERGE (c)-[:ASSOCIATED_IP]->(ip)
+            """, rows=ip_rows)
+            session.run("""
+                UNWIND $rows AS row
+                MATCH (c:Customer {id: row.customer_id})
+                MATCH (m:Merchant {id: row.merchant_id})
+                MERGE (c)-[t:FILED_TRANSACTION {transaction_id: row.transaction_id}]->(m)
+                SET t.amount = row.amount, t.is_fraud = row.label,
+                    t.fraud_probability = row.fraud_probability
+            """, rows=edge_outputs)
+
+            labels = {"customer": "Customer", "merchant": "Merchant",
+                      "device_id": "Device", "ip_address": "IPAddress"}
+            for node_type, rows in node_outputs.items():
+                label = labels[node_type]
+                session.run(f"""
+                    UNWIND $rows AS row
+                    MERGE (n:{label} {{id: row.id}})
+                    SET n.gnn_embedding = row.embedding,
+                        n.gnn_collusion_risk = row.collusion_risk
+                """, rows=rows)
+
+    def get_gnn_scores(self, customer_id: str, merchant_id: str,
+                       transaction_id: str | None = None) -> dict:
+        """Return saved edge fraud and participant collusion scores, if present."""
+        if self._backend != "neo4j" or not self._driver:
+            return {}
+        with self._driver.session() as session:
+            rec = session.run("""
+                MATCH (c:Customer {id: $cid})
+                MATCH (m:Merchant {id: $mid})
+                OPTIONAL MATCH (c)-[t:FILED_TRANSACTION]->(m)
+                WHERE $transaction_id IS NULL OR t.transaction_id = $transaction_id
+                RETURN c.gnn_collusion_risk AS customer_risk,
+                       m.gnn_collusion_risk AS merchant_risk,
+                       t.fraud_probability AS transaction_probability
+                ORDER BY t.transaction_id DESC LIMIT 1
+            """, cid=str(customer_id), mid=str(merchant_id),
+                 transaction_id=str(transaction_id) if transaction_id is not None else None).single()
+        if not rec:
+            return {}
+        values = dict(rec)
+        risks = [float(v) for v in (values.get("customer_risk"), values.get("merchant_risk"))
+                 if v is not None]
+        result = {}
+        if risks:
+            result["gnn_collusion_risk"] = max(risks)
+        if values.get("transaction_probability") is not None:
+            result["gnn_transaction_probability"] = float(values["transaction_probability"])
+        return result
+
     def close(self):
         if self._driver:
             self._driver.close()
@@ -261,6 +341,22 @@ def get_graph_adapter() -> GraphAdapter:
     if _ADAPTER is None:
         _ADAPTER = GraphAdapter()
     return _ADAPTER
+
+
+def _neo4j_node_rows(df: pd.DataFrame, column: str) -> list[dict]:
+    if column not in df.columns:
+        return []
+    amounts = df.groupby(column, dropna=True)["transaction_amount"].agg(["sum", "count"])
+    return [{"id": str(key), "amount": float(row["sum"]),
+             "degree": int(row["count"])} for key, row in amounts.iterrows()]
+
+
+def _neo4j_link_rows(df: pd.DataFrame, column: str) -> list[dict]:
+    if column not in df.columns:
+        return []
+    rows = df.loc[df[column].notna(), ["customer_id", column]].drop_duplicates()
+    return [{"customer_id": str(row["customer_id"]), "value": str(row[column])}
+            for _, row in rows.iterrows()]
 
 
 # ── Drop-in replacements for graph_intelligence functions ─────────────────────

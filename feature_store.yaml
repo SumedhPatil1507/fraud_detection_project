@@ -1,0 +1,9 @@
+project: fraudguard
+provider: local
+registry: data/feast_registry.db
+offline_store:
+  type: file
+online_store:
+  type: redis
+  connection_string: localhost:6379
+entity_key_serialization_version: 3

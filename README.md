@@ -1,405 +1,136 @@
-# 🚨 FraudGuard AI — Enterprise Edition v5.0
+# FraudGuard AI
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
-![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)
+Interactive fraud detection and investigation workbench built with Streamlit. It combines transaction scoring, graph intelligence, event-time features, streaming ingestion, and analyst-reviewed SAR drafting in one dashboard.
+
+[![Open the Streamlit app](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)
+[![CI](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml/badge.svg)](https://github.com/SumedhPatil1507/fraud_detection_project/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![LangGraph](https://img.shields.io/badge/LangGraph-1.2-blue)
-![ChromaDB](https://img.shields.io/badge/ChromaDB-1.5-green)
 
-**[Live Demo →](https://frauddetectionproject-ejx7okwuu6c8nrszvyzhhv.streamlit.app)**
-
-Production-grade ML fraud detection platform. XGBoost/LightGBM ensemble with **Neo4j graph intelligence**, **async PostgreSQL + PgBouncer**, **Celery task queuing**, **S3 artifact storage**, **Prometheus observability**, **DPDP Act 2023 / RBI IT Framework compliance mapping**, and a **LangGraph-powered Fraud Investigation Copilot** — all with graceful fallbacks so it runs on Streamlit Cloud for free.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│         Streamlit UI  (16 tabs)  /  FastAPI v5.0            │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-          ┌────────────┴────────────┐
-          │       ML Engine         │
-          │  XGBoost · LightGBM     │
-          │  SHAP · Optuna · CV     │
-          └────────────┬────────────┘
-                       │
-     ┌─────────────────┼──────────────────────┐
-     │                 │                       │
-┌────▼────┐    ┌───────▼──────┐   ┌───────────▼──────────┐
-│  Graph  │    │  Data Layer  │   │  🤖 Copilot (NEW)     │
-│  Layer  │    │  asyncpg +   │   │  LangGraph pipeline   │
-│ Neo4j / │    │  PgBouncer → │   │  RetrieverAgent       │
-│ Neptune │    │  Supabase →  │   │  ToolAgent            │
-│ NetworkX│    │  CSV         │   │  WriterAgent          │
-└─────────┘    └───────┬──────┘   │  HITL Router          │
-                       │          └───────────────────────┘
-          ┌────────────┴────────────┐
-          │    Background Services  │
-          │  Celery + Redis         │
-          │  S3 / MinIO artifacts   │
-          │  Prometheus + Grafana   │
-          │  ChromaDB vector store  │
-          └─────────────────────────┘
-```
-
----
-
-## Feature Matrix — 37 Modules
-
-| Layer | Modules | Key capability |
-|---|---|---|
-| **ML** | `model.py`, `pipeline.py`, `shap_utils.py` | XGBoost+LightGBM ensemble, Optuna HPO, calibration |
-| **Graph** | `graph_intelligence.py`, `graph_neo4j.py` | Neo4j/Neptune/NetworkX adapter, fraud ring detection (3 strategies), betweenness centrality |
-| **Database** | `database.py`, `db_async.py` | SQLAlchemy asyncpg pool → PgBouncer → Supabase REST → CSV; MD5 record checksums |
-| **Artifact Store** | `object_store.py` | S3/MinIO with MD5 integrity check; refuses corrupt model loads |
-| **Task Queue** | `task_queue.py` | Celery + Redis; retrain, drift-check, SAR batch, beat schedule; sync fallback |
-| **Observability** | `observability.py`, `copilot_metrics.py` | Prometheus p95/p99 latency, PSI gauge, TP/FP ratio, DB pool, queue depth; **9 copilot-specific counters/histograms**; Grafana JSON |
-| **Compliance** | `compliance.py` | DPDP Act 2023 (7 controls) + RBI IT Framework (7 controls); evidence + remediation; JSON report |
-| **Security** | `encryption.py`, `rbac.py`, `tokenizer.py`, `pii.py`, `rate_limit.py` | Fernet encryption, RBAC, HMAC tokenization, key rotation, MultiFernet, pgcrypto SQL |
-| **Shadow Mode** | `shadow.py` | `asyncio.create_task()` parallel inference, ThreadPoolExecutor, BackgroundTask logging |
-| **MLOps** | `drift.py`, `retrain.py` | PSI drift detection, auto-retraining, model versioning, webhook notifications |
-| **Finance** | `business.py`, `optimizer.py`, `savings_tracker.py` | Threshold optimizer, FP/FN cost model, ROI projections, savings accumulator |
-| **Compliance/SAR** | `sar.py`, `audit.py` | FinCEN-style SAR generation, full prediction audit log |
-| **🤖 Copilot (NEW)** | `agent_graph.py`, `vector_store.py`, `copilot_metrics.py` | LangGraph 3-agent pipeline, ChromaDB RAG, HITL routing — see below |
-| **UI** | `plots.py`, `hitl.py`, `llm_explain.py`, `simulator.py` | 30+ Plotly charts, HITL queue, Groq LLM explanations, live transaction stream |
-| **API** | `validation.py`, `ingest.py`, `auth.py` | Pydantic validation, multi-format file ingestion, Streamlit auth |
-
----
-
-## 🤖 Fraud Investigation Copilot (NEW in v5.0)
-
-A **LangGraph multi-agent pipeline** that automates SAR investigation end-to-end, routing every draft through the existing HITL queue for analyst approval before anything is filed.
-
-### Pipeline
-
-```
-transaction + fraud_probability
-        │
-        ▼
-┌───────────────────┐
-│  RetrieverAgent   │  semantic search over audit log + past SARs
-│  (ChromaDB RAG)   │  using all-MiniLM-L6-v2 embeddings (local, no API key)
-└────────┬──────────┘
-         │  retrieved_cases (top-k similar historical incidents)
-         ▼
-┌───────────────────┐
-│   ToolAgent       │  tool 1: graph_intelligence → ring membership + risk score
-│ (tool-calling)    │  tool 2: shap_utils / llm_explain → top SHAP feature drivers
-└────────┬──────────┘
-         │  graph_intel + fraud_rings + shap_factors
-         ▼
-┌───────────────────┐
-│   WriterAgent     │  Groq LLM (llama3-8b-8192) drafts structured SAR narrative
-│  (Groq LLM)      │  citing SHAP evidence, graph rings, and retrieved precedents
-│                   │  → calls sar.generate_sar(), status forced to DRAFT
-└────────┬──────────┘
-         │  sar_draft (status=DRAFT, never auto-filed)
-         ▼
-┌───────────────────┐
-│   HITLRouter      │  enqueues to hitl.add_to_review_queue()
-│                   │  analyst approves/rejects in the 👤 HITL tab
-└───────────────────┘
-```
-
-### Graceful degradation
-
-| Condition | Behaviour |
-|---|---|
-| `langgraph` not installed | Falls back to identical linear pipeline (no graph overhead) |
-| `chromadb` / `sentence-transformers` not installed | Retriever returns empty list; pipeline continues |
-| `GROQ_API_KEY` not set | Writer uses rule-based narrative from `sar._build_narrative()` |
-| SHAP / model not provided | SHAP factors are empty; pipeline continues |
-| Graph ring log empty | Graph intel returns zero-risk defaults |
-
-### Observability
-
-9 new Prometheus metrics under the `fraudguard_copilot_*` namespace, all following the same naming and label conventions as `observability.py`:
-
-| Metric | Type | Labels |
-|---|---|---|
-| `fraudguard_copilot_agent_runs_total` | Counter | `agent`, `status` |
-| `fraudguard_copilot_agent_latency_seconds` | Histogram | `agent` |
-| `fraudguard_copilot_tool_calls_total` | Counter | `tool`, `status` |
-| `fraudguard_copilot_retriever_hits` | Histogram | — |
-| `fraudguard_copilot_sar_drafts_total` | Counter | `status` |
-| `fraudguard_copilot_hitl_queued_total` | Counter | — |
-| `fraudguard_copilot_graph_queries_total` | Counter | `status` |
-| `fraudguard_copilot_shap_queries_total` | Counter | `status` |
-| `fraudguard_copilot_graph_errors_total` | Counter | `agent` |
-
-### New files
-
-| File | Purpose |
-|---|---|
-| `src/agent_graph.py` | LangGraph `StateGraph`, `CopilotState`, all four node functions, `run_copilot()` entry point |
-| `src/vector_store.py` | ChromaDB persistent client, `_STEmbeddingFunction`, `index_audit_log()`, `index_sar_reports()`, `search_all()` |
-| `src/copilot_metrics.py` | 9 Prometheus metrics + `@instrument_agent` decorator |
-
-### New environment variables
-
-```bash
-# Vector store location (default: ./outputs/chroma_db)
-CHROMA_PERSIST_DIR="/path/to/chroma"
-
-# ChromaDB collection names
-CHROMA_AUDIT_COLLECTION="audit_log"
-CHROMA_SAR_COLLECTION="sar_reports"
-
-# Embedding model (runs locally via sentence-transformers)
-EMBEDDING_MODEL="all-MiniLM-L6-v2"
-
-# LLM model for SAR narrative (reuses existing GROQ_API_KEY)
-COPILOT_LLM_MODEL="llama3-8b-8192"
-
-# Max historical cases retrieved per query
-COPILOT_TOP_K="5"
-
-# Min fraud probability to enter the copilot pipeline
-COPILOT_MIN_FRAUD_PROB="0.5"
-```
-
----
-
----
-
-## Dashboard — 16 Tabs
-
-| # | Tab | Features |
-|---|---|---|
-| 1 | 📊 Explorer | EDA, distributions, fraud-by-hour, velocity heatmap, correlation matrix |
-| 2 | 🏋️ Train | XGBoost + LightGBM, Optuna, 3-fold CV, hyperparameter tracking |
-| 3 | 📈 Metrics | ROC/PR curves, confusion matrix, threshold analysis, cost/savings |
-| 4 | 🔍 Explainability | SHAP global + per-prediction, LLM explanations (Groq) |
-| 5 | 📡 Drift | PSI drift detection, retrain trigger, drift severity chart |
-| 6 | ⚡ Predict | Real-time scoring, fraud gauge, validation warnings, auto-HITL |
-| 7 | 🔴 Live Stream | Simulated transaction feed, live probability chart |
-| 8 | 👤 HITL | Analyst review queue — confirm/reject fraud decisions |
-| 9 | 🗂️ Audit | Full prediction log (Postgres → Supabase → CSV), rolling fraud rate |
-| 10 | 🕸️ Graph Intel | Neo4j fraud ring detector, network viz, graph feature distributions |
-| 11 | 🔑 Vault | Key rotation, tokenize/detokenize PII, pgcrypto SQL schema |
-| 12 | 💰 Savings | Savings tracker, threshold optimizer chart, ROI calculator |
-| 13 | 📋 SAR | FinCEN SAR management — review, file, dismiss |
-| 14 | 📡 Observability | Live metrics (p95/p99), PSI chart, Celery queue, artifact registry, Grafana JSON |
-| 15 | ⚖️ Compliance | DPDP Act 2023 + RBI IT Framework audit with score gauge |
-| **16** | **🤖 Copilot** *(NEW)* | **LangGraph investigation pipeline — vector search, graph+SHAP tools, AI SAR draft, HITL routing** |
----
-
-## Quick Start
+## Run the Streamlit dashboard
 
 ```bash
 git clone https://github.com/SumedhPatil1507/fraud_detection_project.git
 cd fraud_detection_project
-pip install -r requirements.txt
+python -m venv .venv
+# Windows: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-FastAPI (separate terminal):
+The dashboard opens at `http://localhost:8501`. It starts with the built-in sample data; use the sidebar to upload a CSV, Excel, JSON, or Parquet dataset with a binary `label` column. PII masking is enabled by default. Interactive Plotly figures support zoom, pan, hover details, selection, and legend toggles.
+
+### Dashboard areas
+
+| Area | What you can explore |
+|---|---|
+| Explorer | Fraud distribution, transaction amounts, temporal/channel patterns, correlation heatmap |
+| Train and Metrics | Train the ensemble, review ROC/PR, confusion matrix, threshold and cost curves |
+| Explainability and Drift | SHAP views, model drivers, and feature drift |
+| Predict and Live Stream | Score individual or simulated transactions and inspect changing risk |
+| HITL, Audit, and SAR | Review queue, prediction history, and SAR records |
+| Graph Intel and Streaming & GNN | Fraud rings, heterogeneous entity/relationship schema, service configuration, and evaluation report |
+| Vault, Savings, Observability, and Compliance | Key-management tools, business impact, runtime metrics, and control checks |
+| Copilot | Retrieve precedents, inspect graph/SHAP signals, draft a guarded SAR, and route it for review |
+
+The **Streaming & GNN** tab shows configured service settings and available model artifacts. It does not probe remote services or start a Kafka consumer. Its graph schema and RAGAS charts are interactive Plotly figures.
+
+## Feature pipeline
+
+### Feast event-time features
+
+`feature_store.yaml` configures the local Feast registry, offline file source, and Redis online store. `feature_definitions.py` defines `customer_id` and `merchant_id` entities and customer/merchant rolling transaction and cross-channel feature views. Feature source rows include `event_timestamp` and `created_timestamp` for point-in-time historical retrieval.
+
+```bash
+feast -c . apply
+```
+
+The offline source defaults to `data/transaction_features.parquet`; populate that file with event-time feature rows before running historical retrieval. `tests/test_feature_store.py` covers point-in-time behavior.
+
+### Kafka streaming consumer
+
+The asynchronous consumer reads `financial.transactions.v1`. It validates transaction identity and event time, writes the audit record to PostgreSQL and rolling features to Redis, and manually commits the Kafka offset only after both writes succeed. Idempotent transaction IDs support safe redelivery.
+
+Configure `KAFKA_BOOTSTRAP_SERVERS`, `DATABASE_URL`, and `REDIS_URL`, then start it with:
+
+```bash
+python -m src.streaming.kafka_consumer
+```
+
+The default topic is `financial.transactions.v1`; the default consumer group is `fraudguard-feature-pipeline`. PostgreSQL connectivity and Redis are required for the consumer.
+
+## Graph fraud model
+
+The optional two-layer heterogeneous R-GCN uses customer, merchant, device, and IP nodes with transaction, shared-device, and associated-IP relations. It predicts transaction-edge fraud probability and node collusion risk. The training CLI writes embeddings and scores to Neo4j when a Neo4j backend is configured.
+
+```bash
+python scripts/train_gnn_fraud.py data/transactions.csv --epochs 40
+```
+
+Provide a labeled transaction dataset with customer/merchant IDs and optional device/IP columns. The script saves model weights under `outputs/gnn_fraud.pt` by default. GNN scores are consumed as a primary collusion signal by the Copilot when present in Neo4j.
+
+## Fraud Investigation Copilot
+
+The LangGraph pipeline retrieves historical vector chunks, gathers graph/SHAP signals, and drafts a SAR narrative. Guardrails checks require citations to retrieved chunk IDs and lexical support from cited context. Unverified output is withheld and routed to mandatory analyst review. Drafts are never auto-filed. RBI deadline validation requires `suspicion_concluded_at`, a holiday calendar, and `principal_officer_reason`; set `RBI_HOLIDAY_CALENDAR` to a newline-delimited list of `YYYY-MM-DD` holidays.
+
+OpenTelemetry spans wrap LangGraph nodes, vector searches, GNN lookups, and evaluation steps. Configure `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) to export traces. Spans intentionally avoid transaction text and retrieved document content.
+
+Useful Copilot settings:
+
+```text
+GROQ_API_KEY                 Writer LLM key
+COPILOT_LLM_MODEL            Writer model (default configured in the app)
+CHROMA_PERSIST_DIR           ChromaDB path (default: outputs/chroma_db)
+COPILOT_TOP_K                Number of retrieved precedent chunks
+SAR_JURISDICTION             Default SAR jurisdiction (US or RBI/India)
+RBI_HOLIDAY_CALENDAR         Newline-delimited holiday dates for RBI due-date checks
+```
+
+## RAGAS audit evaluation
+
+The evaluation suite creates 50 repeatable synthetic SAR investigation scenarios and reports Context Precision, Context Recall, Faithfulness, and Answer Relevancy. It needs `OPENAI_API_KEY` for evaluation and embeddings and `GROQ_API_KEY` for Copilot answers.
+
+```bash
+python -m eval.ragas_suite --output outputs/ragas_audit_report.json
+```
+
+The Streaming & GNN dashboard tab reads this JSON report and plots aggregate and per-scenario metric scores interactively. `outputs/` is git-ignored because it contains generated artifacts and audit data.
+
+## Optional API and local services
+
+Run the FastAPI service separately:
+
 ```bash
 uvicorn api:app --reload --port 8000
-# Swagger → http://localhost:8000/docs
 ```
 
-Full stack with Docker:
-```bash
-docker-compose up
-# Streamlit   → http://localhost:8501
-# FastAPI     → http://localhost:8000/docs
-# Grafana     → http://localhost:3000  (admin/admin)
-# MinIO       → http://localhost:9001  (minioadmin/minioadmin)
-# Prometheus  → http://localhost:9090
-```
-
----
-
-## Deploy on Any Platform
-
-| Platform | Config file | Start command |
-|---|---|---|
-| **Streamlit Cloud** | *(auto)* | Deploy `app.py` from GitHub |
-| **Railway** | `railway.toml` | Auto-detected |
-| **Render** | `render.yaml` | Auto-detected |
-| **Heroku** | `Procfile` | `git push heroku main` |
-| **Docker / VPS** | `docker-compose.yml` | `docker-compose up` |
-| **Google Cloud Run** | `Dockerfile.streamlit` | `gcloud run deploy` |
-| **AWS EC2** | `docker-compose.yml` | `docker-compose up -d` |
-| **Azure App Service** | `Dockerfile.streamlit` | Set `WEBSITES_PORT=8501` |
-
-### Streamlit Cloud (Free)
-
-1. Push to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io) → New app → select this repo
-3. Set main file: `app.py`
-4. Add secrets under **Settings → Secrets**:
-
-```toml
-SUPABASE_URL = "https://xxxx.supabase.co"
-SUPABASE_KEY = "your-anon-key"
-GROQ_API_KEY = "gsk_xxxx"
-ENCRYPTION_KEY = "your-fernet-key"
-TOKEN_SECRET = "your-hmac-secret"
-```
-
-### Railway (Paid, ~$5/mo)
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-```
-Config in `railway.toml` — deploys automatically on push.
-
-### Render (Free tier available)
-
-Connect GitHub repo → Render detects `render.yaml` → deploys both Streamlit and API services.
-
-### Heroku
-
-```bash
-heroku create fraudguard-ai
-heroku config:set SUPABASE_URL=... GROQ_API_KEY=...
-git push heroku main
-```
-
----
-
-## API Reference (v4.0)
-
-All endpoints require `X-API-Key` header.
-
-```bash
-# Health + graph backend info
-curl http://localhost:8000/
-
-# Async predict (analyst+) — shadow scoring runs in parallel
-curl -X POST http://localhost:8000/predict \
-  -H "X-API-Key: analyst-dev-key" \
-  -H "Content-Type: application/json" \
-  -d '{"transaction_amount": 1500, "distance_from_home_km": 300,
-       "hour": 2, "customer_id": "C001", "merchant_id": "M042"}'
-
-# Concurrent batch scoring (asyncio.gather)
-curl -X POST http://localhost:8000/predict/batch \
-  -H "X-API-Key: analyst-dev-key" \
-  -d '{"transactions": [...]}'
-
-# Fraud rings from Neo4j / NetworkX
-curl http://localhost:8000/graph/rings -H "X-API-Key: analyst-dev-key"
-
-# Trigger Celery retraining job
-curl -X POST "http://localhost:8000/tasks/retrain?reason=drift" \
-  -H "X-API-Key: admin-dev-key"
-
-# Celery queue stats
-curl http://localhost:8000/tasks/queue/stats -H "X-API-Key: admin-dev-key"
-
-# Artifact registry (MD5 checksums)
-curl http://localhost:8000/artifacts -H "X-API-Key: admin-dev-key"
-
-# Key rotation
-curl -X POST http://localhost:8000/vault/rotate -H "X-API-Key: admin-dev-key"
-
-# DPDP + RBI compliance report
-curl http://localhost:8000/compliance -H "X-API-Key: admin-dev-key"
-
-# SAR generation
-curl -X POST http://localhost:8000/sar/generate \
-  -H "X-API-Key: analyst-dev-key" \
-  -d '{"transaction_amount": 5000, "distance_from_home_km": 500}'
-```
-
----
-
-## Environment Variables
-
-```bash
-# ── Required in production ─────────────────────────────────────────────────────
-ENCRYPTION_KEY="..."      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-TOKEN_SECRET="..."        # any strong random string
-API_KEY_ADMIN="..."
-API_KEY_ANALYST="..."
-API_KEY_VIEWER="..."
-
-# ── Database (asyncpg + PgBouncer) ─────────────────────────────────────────────
-DATABASE_URL="postgresql+asyncpg://user:pass@pgbouncer:6432/fraudguard"
-
-# ── Task queue ─────────────────────────────────────────────────────────────────
-REDIS_URL="redis://localhost:6379/0"
-
-# ── Artifact store ─────────────────────────────────────────────────────────────
-AWS_S3_BUCKET="your-bucket"
-# OR MinIO:
-MINIO_ENDPOINT="http://minio:9000"
-MINIO_BUCKET="fraudguard"
-MINIO_ACCESS_KEY="minioadmin"
-MINIO_SECRET_KEY="minioadmin"
-
-# ── Graph DB ───────────────────────────────────────────────────────────────────
-NEO4J_URI="bolt://neo4j:7687"
-NEO4J_USER="neo4j"
-NEO4J_PASSWORD="password"
-# OR Amazon Neptune:
-NEPTUNE_ENDPOINT="your-cluster.neptune.amazonaws.com"
-
-# ── Observability ──────────────────────────────────────────────────────────────
-PROMETHEUS_PORT="9090"
-
-# ── Optional ───────────────────────────────────────────────────────────────────
-SUPABASE_URL="https://xxxx.supabase.co"
-SUPABASE_KEY="your-anon-key"
-GROQ_API_KEY="gsk_xxxx"
-RETRAIN_WEBHOOK_URL="https://hooks.slack.com/xxx"
-INSTITUTION_NAME="Your Bank Name"
-```
-
-> All infrastructure variables are **optional** — the app falls back gracefully:
-> Neo4j → NetworkX · PostgreSQL → Supabase → CSV · S3 → local disk · Redis → sync mode
-
----
-
-## Data Format
-
-Upload CSV / Excel / JSON / Parquet via the sidebar. Required column: `label` (0 = legit, 1 = fraud).
-Graph features auto-activate when `customer_id` and `merchant_id` columns are present.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| **ML** | XGBoost · LightGBM · SHAP · scikit-learn · Optuna |
-| **Graph** | Neo4j · Amazon Neptune · NetworkX (fallback) |
-| **Database** | asyncpg · SQLAlchemy 2.0 · PgBouncer · PostgreSQL · Supabase |
-| **Artifact Store** | AWS S3 · MinIO (S3-compatible) |
-| **Task Queue** | Celery · Redis |
-| **Observability** | Prometheus · Grafana |
-| **Security** | Fernet · MultiFernet · HMAC-SHA256 · slowapi |
-| **API** | FastAPI · asyncio · BackgroundTasks · Pydantic v2 |
-| **Frontend** | Streamlit · Plotly · Seaborn |
-| **LLM** | Groq (Llama-3) |
-| **Agentic AI** | LangGraph · LangChain Core · sentence-transformers · ChromaDB |
-| **DevOps** | Docker Compose · GitHub Actions · pytest |
-
----
+The API docs are at `http://localhost:8000/docs`. Docker assets are provided for Streamlit and the API. External integrations such as Neo4j, Kafka, PostgreSQL, Redis, object storage, and LLM APIs are optional for the dashboard's sample-data experience; configure the relevant service URLs and credentials to enable them.
 
 ## Testing
 
 ```bash
-pytest tests/ -v
-pytest tests/ --cov=src --cov-report=html
+python -m pytest tests/ -q
 ```
 
-CI runs on every push: syntax check all 33 modules → pytest → import smoke test.
+Key additions include point-in-time feature-store tests and Copilot guardrail/fallback tests. Optional integrations require their corresponding services and credentials for end-to-end operation.
 
----
+## Repository map
+
+```text
+app.py                         Streamlit dashboard
+feature_store.yaml             Feast project and store configuration
+feature_definitions.py         Feast entities and event-time feature views
+src/streaming/kafka_consumer.py Kafka audit/cache dual-write consumer
+src/models/gnn_fraud.py        Heterogeneous two-layer R-GCN
+scripts/train_gnn_fraud.py     GNN training and Neo4j output CLI
+src/agent_graph.py             LangGraph fraud investigation Copilot
+src/copilot_guardrails.py      SAR grounding, citation, and jurisdiction checks
+src/telemetry.py               OpenTelemetry SDK/span helpers
+eval/ragas_suite.py            50-scenario RAGAS evaluation and JSON export
+tests/                         Unit and integration tests
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
-
----
-
-Built by **[@SumedhPatil1507](https://github.com/SumedhPatil1507)** — demonstrates senior ML engineering: async infrastructure, graph databases, **LangGraph multi-agent RAG pipeline**, cloud-native storage, regulatory compliance (DPDP/RBI), and production observability. **⭐ Star if useful!**
+MIT. See [LICENSE](LICENSE).

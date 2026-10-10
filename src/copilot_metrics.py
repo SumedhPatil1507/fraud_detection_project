@@ -13,7 +13,7 @@ Metrics defined here
   fraudguard_copilot_agent_latency_seconds     Histogram agent
   fraudguard_copilot_tool_calls_total          Counter   tool, status
   fraudguard_copilot_retriever_hits            Histogram (number of docs returned)
-  fraudguard_copilot_sar_drafts_total          Counter   status (drafted|error)
+  fraudguard_copilot_sar_drafts_total          Counter   status (drafted|rejected|error)
   fraudguard_copilot_hitl_queued_total         Counter   (no labels)
   fraudguard_copilot_graph_queries_total       Counter   status
   fraudguard_copilot_shap_queries_total        Counter   status
@@ -109,7 +109,7 @@ COPILOT_SAR_DRAFTS = _metric(
     Counter,
     "fraudguard_copilot_sar_drafts_total",
     "SAR drafts produced by the copilot WriterAgent",
-    labels=["status"],                    # status: drafted | error
+    labels=["status"],                    # status: drafted | rejected | error
 )
 
 # Items pushed into the HITL queue by the copilot
@@ -176,7 +176,7 @@ def record_retriever_hits(n_docs: int) -> None:
 
 
 def record_sar_draft(status: str) -> None:
-    """Record a SAR draft attempt (drafted | error)."""
+    """Record a SAR draft attempt (drafted | rejected | error)."""
     try:
         COPILOT_SAR_DRAFTS.labels(status=status).inc()
     except Exception:

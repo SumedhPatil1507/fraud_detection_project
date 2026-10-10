@@ -4,8 +4,10 @@ import numpy as np
 import pickle
 import os
 import time
+import json
 import plotly.express as px
 import plotly.graph_objects as go
+from pathlib import Path
 
 from src.pipeline import run_pipeline
 from src.model import train_model, safe_predict_proba
@@ -66,15 +68,16 @@ st.set_page_config(
 st.markdown("""
 <style>
 [data-testid="metric-container"] { background:#1e1e2e; border-radius:8px; padding:12px; }
-.stTabs [data-baseweb="tab"] { font-size:12px; font-weight:600; }
-.stTabs [data-baseweb="tab-list"] { gap: 4px; }
+.stTabs [data-baseweb="tab"] { font-size:13px; font-weight:650; }
+.stTabs [data-baseweb="tab-list"] { gap:6px; }
+[data-testid="stAppViewContainer"] > .main { background:radial-gradient(ellipse at top left,rgba(231,76,60,.08),transparent 35%); }
+.block-container { padding-top:2rem; padding-bottom:3rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 FraudGuard AI — Enterprise Fraud Detection Platform")
+st.title("🛡️ FraudGuard AI")
 st.caption(
-    "LangGraph Copilot · XGBoost/LightGBM · Neo4j Graph · "
-    "Async PostgreSQL · Celery · S3 · ChromaDB · Prometheus · DPDP/RBI Compliance"
+    "Enterprise fraud intelligence · real-time features · graph risk · analyst-led investigations"
 )
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -184,11 +187,11 @@ tabs = st.tabs([
     "🔍 Explainability", "📡 Drift", "⚡ Predict",
     "🔴 Live Stream", "👤 HITL", "🗂️ Audit",
     "🕸️ Graph Intel", "🔑 Vault", "💰 Savings", "📋 SAR",
-    "📡 Observability", "⚖️ Compliance", "🤖 Copilot"
+    "📡 Observability", "⚖️ Compliance", "🤖 Copilot", "🧬 Streaming & GNN"
 ])
 (tab_data, tab_train, tab_metrics, tab_shap, tab_drift, tab_predict,
  tab_live, tab_hitl, tab_audit, tab_graph, tab_vault, tab_savings,
- tab_sar, tab_obs, tab_compliance, tab_copilot) = tabs
+ tab_sar, tab_obs, tab_compliance, tab_copilot, tab_streaming) = tabs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DATA EXPLORER
@@ -1574,3 +1577,143 @@ with tab_copilot:
             # Strip non-serialisable keys before rendering
             safe_sar = {k: v for k, v in sar.items() if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
             st.json(safe_sar)
+
+
+# ── TAB 17 — STREAMING, FEATURE STORE & GNN ───────────────────────────────────
+with tab_streaming:
+    st.subheader("Real-time Features & Graph Risk")
+    st.caption(
+        "Inspect the event-time feature schema, streaming configuration, heterogeneous graph, "
+        "and the latest RAGAS investigation evaluation."
+    )
+
+    statuses = [
+        ("Kafka", bool(os.getenv("KAFKA_BOOTSTRAP_SERVERS")), "financial.transactions.v1"),
+        ("PostgreSQL audit", bool(os.getenv("DATABASE_URL")), "idempotent transaction audit"),
+        ("Redis online cache", bool(os.getenv("REDIS_URL")), "rolling entity features"),
+        ("Neo4j", bool(os.getenv("NEO4J_URI")), "graph persistence"),
+        ("GNN model", Path("outputs/gnn_fraud.pt").exists(), "trained R-GCN weights"),
+    ]
+    status_cols = st.columns(len(statuses))
+    for col, (name, ready, detail) in zip(status_cols, statuses):
+        col.metric(name, "Ready" if ready else "Not configured", detail)
+
+    st.info(
+        "A status of Ready means the corresponding setting or model artifact is present. "
+        "This panel does not probe external services or start the Kafka consumer."
+    )
+
+    left, right = st.columns([1.05, 1.4])
+    with left:
+        st.markdown("#### Point-in-time feature schema")
+        st.markdown(
+            "Feast entities: `customer_id`, `merchant_id`. Feature views use event timestamps "
+            "and an immutable source so historical joins respect when each value became available."
+        )
+        schema_path = Path("feature_store.yaml")
+        if schema_path.exists():
+            st.code(schema_path.read_text(encoding="utf-8"), language="yaml")
+        else:
+            st.warning("feature_store.yaml was not found in the application directory.")
+        with st.expander("Stream consumer contract"):
+            st.markdown(
+                "- Topic: `financial.transactions.v1`\n"
+                "- Manual Kafka offsets; commit follows successful PostgreSQL and Redis writes\n"
+                "- Online rolling counts and amount totals are maintained per customer and merchant"
+            )
+
+    with right:
+        st.markdown("#### Heterogeneous fraud graph")
+        node_positions = {
+            "customer": (0.08, 0.52), "merchant": (0.90, 0.52),
+            "device_id": (0.50, 0.88), "ip_address": (0.50, 0.13),
+        }
+        edge_specs = [
+            ("customer", "merchant", "filed_transaction", "#ff6b6b"),
+            ("customer", "device_id", "shared_device", "#f7b267"),
+            ("customer", "ip_address", "associated_ip", "#6ec6ff"),
+        ]
+        graph_fig = go.Figure()
+        for source, target, relation, color in edge_specs:
+            x0, y0 = node_positions[source]
+            x1, y1 = node_positions[target]
+            graph_fig.add_trace(go.Scatter(
+                x=[x0, x1], y=[y0, y1], mode="lines",
+                line={"color": color, "width": 3}, name=relation,
+                hovertemplate=f"{relation}<extra></extra>",
+            ))
+        graph_fig.add_trace(go.Scatter(
+            x=[point[0] for point in node_positions.values()],
+            y=[point[1] for point in node_positions.values()],
+            mode="markers+text", text=list(node_positions), textposition="bottom center",
+            marker={"size": 34, "color": ["#f45b69", "#5bc0be", "#f7b267", "#6ec6ff"],
+                    "line": {"color": "#ffffff", "width": 1}},
+            hovertemplate="Node type: %{text}<extra></extra>", name="Node types",
+        ))
+        graph_fig.update_layout(
+            height=390, margin={"l": 10, "r": 10, "t": 25, "b": 35},
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis={"visible": False, "range": [-0.1, 1.1]},
+            yaxis={"visible": False, "range": [0, 1.08]},
+            legend={"orientation": "h", "y": -0.16},
+            hovermode="closest",
+        )
+        st.plotly_chart(graph_fig, use_container_width=True, key="heterogeneous_graph_schema")
+
+    st.divider()
+    st.markdown("#### SAR investigation quality")
+    report_path = Path("outputs/ragas_audit_report.json")
+    if report_path.exists():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            metric_data = report.get("metrics", {})
+            if metric_data:
+                metric_df = pd.DataFrame(
+                    [{"Metric": key.replace("_", " ").title(), "Score": value}
+                     for key, value in metric_data.items() if isinstance(value, (int, float))]
+                )
+                score_col, sample_col = st.columns([1, 1.4])
+                with score_col:
+                    metric_fig = px.bar(
+                        metric_df, x="Metric", y="Score", color="Score",
+                        color_continuous_scale=[[0, "#f45b69"], [1, "#45d6a5"]],
+                        range_y=[0, 1], text_auto=".2f", title="RAGAS quality scores",
+                    )
+                    metric_fig.update_layout(height=350, showlegend=False)
+                    st.plotly_chart(metric_fig, use_container_width=True,
+                                    key="ragas_metric_scores")
+                samples = report.get("per_sample", [])
+                if samples:
+                    sample_df = pd.DataFrame(samples)
+                    numeric_metrics = [name for name in (
+                        "context_precision", "context_recall", "faithfulness", "answer_relevancy"
+                    ) if name in sample_df.columns]
+                    if numeric_metrics:
+                        selected_metric = st.selectbox(
+                            "Explore scenario scores", numeric_metrics,
+                            format_func=lambda name: name.replace("_", " ").title(),
+                        )
+                        sample_df.insert(0, "Scenario", range(1, len(sample_df) + 1))
+                        sample_fig = px.scatter(
+                            sample_df, x="Scenario", y=selected_metric,
+                            color=selected_metric, hover_data=["user_input"]
+                            if "user_input" in sample_df.columns else None,
+                            range_y=[0, 1], color_continuous_scale="Viridis",
+                            title=f"Per-scenario {selected_metric.replace('_', ' ')}",
+                        )
+                        sample_fig.update_layout(height=350)
+                        sample_col.plotly_chart(sample_fig, use_container_width=True,
+                                                key="ragas_sample_scores")
+            else:
+                st.warning("The RAGAS report has no aggregate metrics.")
+            st.caption(
+                f"{report.get('sample_count', 0)} scenarios · "
+                f"generated {report.get('generated_at', 'timestamp unavailable')}"
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            st.error(f"Could not read the RAGAS audit report ({type(exc).__name__}).")
+    else:
+        st.info(
+            "No evaluation report found. Run `python -m eval.ragas_suite` with "
+            "OPENAI_API_KEY and GROQ_API_KEY to generate 50-scenario quality scores."
+        )

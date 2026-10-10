@@ -45,6 +45,7 @@ from src.config import (
     EMBEDDING_MODEL,
     COPILOT_TOP_K,
 )
+from src.telemetry import traced
 
 log = logging.getLogger(__name__)
 
@@ -320,6 +321,7 @@ def _result_to_dicts(result: dict, source_tag: str) -> list[dict]:
     return hits
 
 
+@traced("vector_store.search_audit_log")
 def search_audit_log(query: str, top_k: int = COPILOT_TOP_K) -> list[dict]:
     """
     Semantic search over the audit-log collection.
@@ -355,6 +357,7 @@ def search_audit_log(query: str, top_k: int = COPILOT_TOP_K) -> list[dict]:
         return []
 
 
+@traced("vector_store.search_sar_reports")
 def search_sar_reports(query: str, top_k: int = COPILOT_TOP_K) -> list[dict]:
     """
     Semantic search over the SAR-report collection.
@@ -382,6 +385,7 @@ def search_sar_reports(query: str, top_k: int = COPILOT_TOP_K) -> list[dict]:
         return []
 
 
+@traced("vector_store.search_all")
 def search_all(query: str, top_k: int = COPILOT_TOP_K) -> list[dict]:
     """
     Search both collections and return the top-k results merged by score.

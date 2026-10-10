@@ -79,6 +79,116 @@ def build_transaction_graph(df: pd.DataFrame) -> Optional["nx.Graph"]:
     return G
 
 
+# Shared heterogeneous schema used by graph training and Neo4j persistence.
+HETERO_NODE_TYPES = ("customer", "merchant", "device_id", "ip_address")
+HETERO_EDGE_TYPES = (
+    ("customer", "filed_transaction", "merchant"),
+    ("merchant", "rev_filed_transaction", "customer"),
+    ("customer", "shared_device", "device_id"),
+    ("device_id", "rev_shared_device", "customer"),
+    ("customer", "associated_ip", "ip_address"),
+    ("ip_address", "rev_associated_ip", "customer"),
+)
+
+
+def build_heterogeneous_graph(df: pd.DataFrame):
+    """Create PyG HeteroData and stable ID maps from transaction records.
+
+    Structural node features are [log1p(degree), log1p(total_amount)]. Fraud
+    labels are targets only, never input features. Missing optional device/IP
+    columns simply produce empty node stores for those types.
+    """
+    try:
+        import torch
+        from torch_geometric.data import HeteroData
+    except ImportError as exc:
+        raise ImportError("Install torch and torch-geometric to build the fraud GNN graph") from exc
+
+    required = {"customer_id", "merchant_id", "transaction_amount", "label"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Training data is missing columns: {sorted(missing)}")
+    if df[list(required)].isna().any().any():
+        raise ValueError("Training data contains null IDs, amounts, or labels")
+
+    def present(value):
+        return pd.notna(value) and str(value).strip() not in ("", "nan", "None")
+
+    id_maps = {kind: {} for kind in HETERO_NODE_TYPES}
+    amount_totals = {kind: {} for kind in HETERO_NODE_TYPES}
+    degrees = {kind: {} for kind in HETERO_NODE_TYPES}
+    node_label_sum = {kind: {} for kind in HETERO_NODE_TYPES}
+    node_label_count = {kind: {} for kind in HETERO_NODE_TYPES}
+
+    def node_index(kind, value):
+        key = str(value)
+        if key not in id_maps[kind]:
+            id_maps[kind][key] = len(id_maps[kind])
+            amount_totals[kind][key] = 0.0
+            degrees[kind][key] = 0
+            node_label_sum[kind][key] = 0.0
+            node_label_count[kind][key] = 0
+        return id_maps[kind][key]
+
+    tx_pairs, devices, ips, labels = [], [], [], []
+    for _, row in df.iterrows():
+        customer, merchant = str(row["customer_id"]), str(row["merchant_id"])
+        raw_amount = row["transaction_amount"]
+        amount = max(float(raw_amount), 0.0) if pd.notna(raw_amount) else 0.0
+        label = float(row["label"])
+        if label not in (0.0, 1.0):
+            raise ValueError("label values must be binary 0/1")
+        ci, mi = node_index("customer", customer), node_index("merchant", merchant)
+        tx_pairs.append((ci, mi)); labels.append(label)
+        for kind, value in (("customer", customer), ("merchant", merchant)):
+            amount_totals[kind][value] += amount
+            degrees[kind][value] += 1
+            node_label_sum[kind][value] += label
+            node_label_count[kind][value] += 1
+        if "device_id" in df.columns and present(row.get("device_id")):
+            device = str(row["device_id"])
+            di = node_index("device_id", device)
+            devices.append((ci, di))
+            degrees["device_id"][device] += 1
+            node_label_sum["device_id"][device] += label
+            node_label_count["device_id"][device] += 1
+        if "ip_address" in df.columns and present(row.get("ip_address")):
+            ip = str(row["ip_address"])
+            ii = node_index("ip_address", ip)
+            ips.append((ci, ii))
+            degrees["ip_address"][ip] += 1
+            node_label_sum["ip_address"][ip] += label
+            node_label_count["ip_address"][ip] += 1
+
+    graph = HeteroData()
+    node_targets = {}
+    for kind in HETERO_NODE_TYPES:
+        identifiers = list(id_maps[kind])
+        graph[kind].x = torch.tensor([
+            [np.log1p(degrees[kind][key]), np.log1p(amount_totals[kind][key])]
+            for key in identifiers
+        ], dtype=torch.float32).reshape(-1, 2)
+        node_targets[kind] = torch.tensor([
+            node_label_sum[kind][key] / max(node_label_count[kind][key], 1)
+            for key in identifiers
+        ], dtype=torch.float32)
+        graph[kind].y = node_targets[kind]
+
+    def edge_index(pairs):
+        return torch.tensor(pairs, dtype=torch.long).t().contiguous() if pairs else torch.empty((2, 0), dtype=torch.long)
+
+    tx_index, device_index, ip_index = edge_index(tx_pairs), edge_index(devices), edge_index(ips)
+    graph["customer", "filed_transaction", "merchant"].edge_index = tx_index
+    graph["merchant", "rev_filed_transaction", "customer"].edge_index = tx_index.flip(0)
+    graph["customer", "shared_device", "device_id"].edge_index = device_index
+    graph["device_id", "rev_shared_device", "customer"].edge_index = device_index.flip(0)
+    graph["customer", "associated_ip", "ip_address"].edge_index = ip_index
+    graph["ip_address", "rev_associated_ip", "customer"].edge_index = ip_index.flip(0)
+    graph["customer", "filed_transaction", "merchant"].edge_label = torch.tensor(labels, dtype=torch.float32)
+    graph.node_id_maps = id_maps
+    return graph
+
+
 # ── Rich Feature Extraction ────────────────────────────────────────────────────
 
 def extract_graph_features(df: pd.DataFrame) -> pd.DataFrame:
