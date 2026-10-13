@@ -136,7 +136,8 @@ class GraphAdapter:
                 MATCH (m:Merchant {id: row.merchant_id})
                 MERGE (c)-[t:FILED_TRANSACTION {transaction_id: row.transaction_id}]->(m)
                 SET t.amount = row.amount, t.is_fraud = row.label,
-                    t.fraud_probability = row.fraud_probability
+                    t.fraud_probability = row.fraud_probability,
+                    t.rto_probability = row.rto_probability
             """, rows=edge_outputs)
 
             labels = {"customer": "Customer", "merchant": "Merchant",

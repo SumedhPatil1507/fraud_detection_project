@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 FINCEN_NARRATIVE_MAX_CHARS = 20_000
+FINCEN_STANDARD_DEADLINE_DAYS = 30
+FINCEN_NO_SUSPECT_DEADLINE_DAYS = 60
 _CITATION = re.compile(r"\[chunk_id:([^\]\s]+)\]")
 _WORD = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_'-]*")
 _STOP_WORDS = {
@@ -35,9 +37,65 @@ def _working_day_deadline(concluded_at: datetime, days: int = 7) -> datetime:
     return current.replace(hour=23, minute=59, second=59, microsecond=999999)
 
 
+def _parse_datetime(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_lerner_price(pricing: dict, checks: dict, errors: list[str]) -> None:
+    """Enforce configured L=(price-cost)/price cap for proposed prices."""
+    if not pricing:
+        checks["lerner_pricing_status"] = "not_applicable"
+        return
+    if "proposed_price" not in pricing or "marginal_cost" not in pricing:
+        errors.append("pricing requires proposed_price and marginal_cost for Lerner validation")
+        checks["lerner_pricing_status"] = "missing_inputs"
+        return
+    try:
+        price = float(pricing["proposed_price"])
+        marginal_cost = float(pricing["marginal_cost"])
+        # The cap is deployment policy; input data cannot relax it.
+        cap = float(os.getenv("LERNER_INDEX_MAX", "0.30"))
+        if not all(map(lambda value: value == value and abs(value) != float("inf"),
+                       (price, marginal_cost, cap))):
+            raise ValueError("non-finite pricing input")
+        if price <= 0 or marginal_cost < 0 or not 0 <= cap < 1:
+            raise ValueError("price, marginal cost, or Lerner cap is outside its valid range")
+        index = (price - marginal_cost) / price
+        price_ceiling = marginal_cost / (1.0 - cap)
+        checks.update({"lerner_index": round(index, 6), "lerner_index_max": cap,
+                       "lerner_price_ceiling": round(price_ceiling, 6)})
+        if index > cap + 1e-12:
+            errors.append("proposed price exceeds the configured Lerner-index cap")
+            checks["lerner_pricing_status"] = "over_cap"
+        else:
+            checks["lerner_pricing_status"] = "within_cap"
+        # Use Guardrails AI's numeric range validator when the optional package
+        # is installed; the direct check above remains the deterministic control.
+        try:
+            from guardrails import Guard
+            from guardrails_ai.valid_range import ValidRange
+            Guard().use(ValidRange(min=0, max=price_ceiling, on_fail="exception")).validate(price)
+        except ImportError:
+            errors.append("Guardrails AI ValidRange validator is unavailable for pricing validation")
+            checks["lerner_guardrails_status"] = "unavailable"
+        except Exception as exc:
+            errors.append(f"Guardrails AI Lerner price validation failed ({type(exc).__name__})")
+            checks["lerner_guardrails_status"] = "rejected"
+        else:
+            checks["lerner_guardrails_status"] = "passed"
+    except (TypeError, ValueError, OverflowError):
+        errors.append("pricing inputs must be finite numeric values with a valid Lerner cap")
+        checks["lerner_pricing_status"] = "invalid_inputs"
+
+
 def validate_sar_narrative(narrative: str, retrieved_cases: list[dict],
                            transaction: dict | None = None,
-                           *, now: datetime | None = None) -> dict:
+                           *, now: datetime | None = None,
+                           pricing: dict | None = None,
+                           require_filing_dates: bool = False) -> dict:
     """Return {valid, errors, checks}; no citation is trusted unless retrieved."""
     transaction = transaction or {}
     errors: list[str] = []
@@ -90,14 +148,45 @@ def validate_sar_narrative(narrative: str, retrieved_cases: list[dict],
             errors.append(f"sentence {index} is not grounded in its cited vector context")
 
     checks = {"jurisdiction": jurisdiction, "narrative_characters": len(narrative),
-              "fincen_narrative_limit": max_chars if jurisdiction.startswith("US") or jurisdiction == "FINCEN" else None,
+              "fincen_narrative_limit": max_chars if fincen_applies else None,
               "cited_chunk_ids": sorted(cited_ids)}
+    normalized_now = now or datetime.now(timezone.utc)
+    if normalized_now.tzinfo is None:
+        normalized_now = normalized_now.replace(tzinfo=timezone.utc)
+    else:
+        normalized_now = normalized_now.astimezone(timezone.utc)
+    if fincen_applies:
+        detection = transaction.get("initial_detection_at")
+        if detection:
+            try:
+                detected_at = _parse_datetime(detection)
+                raw_no_suspect = transaction.get("no_suspect_identified_at_detection", False)
+                no_suspect = (raw_no_suspect is True or
+                              str(raw_no_suspect).strip().lower() in {"1", "true", "yes"})
+                days = FINCEN_NO_SUSPECT_DEADLINE_DAYS if no_suspect else FINCEN_STANDARD_DEADLINE_DAYS
+                deadline = (detected_at + timedelta(days=days)).replace(
+                    hour=23, minute=59, second=59, microsecond=999999
+                )
+                checks["fincen_filing_due_at"] = deadline.isoformat()
+                checks["fincen_filing_deadline_days"] = days
+                checks["fincen_filing_deadline_status"] = (
+                    "within_deadline" if normalized_now <= deadline else "overdue_escalate"
+                )
+                if detected_at > normalized_now:
+                    errors.append("FinCEN initial_detection_at cannot be in the future")
+                if normalized_now > deadline:
+                    errors.append("FinCEN SAR filing deadline has passed; escalate for compliance review")
+            except (TypeError, ValueError, OverflowError):
+                errors.append("FinCEN initial_detection_at is invalid")
+                checks["fincen_filing_deadline_status"] = "invalid_detection_time"
+        else:
+            checks["fincen_filing_deadline_status"] = "not_evaluated_missing_initial_detection_at"
+            if require_filing_dates:
+                errors.append("FinCEN initial_detection_at is required to verify the SAR filing deadline")
     conclusion = transaction.get("suspicion_concluded_at")
     if jurisdiction in {"IN", "INDIA", "RBI"} and conclusion:
         try:
-            concluded = datetime.fromisoformat(str(conclusion).replace("Z", "+00:00"))
-            if concluded.tzinfo is None:
-                concluded = concluded.replace(tzinfo=timezone.utc)
+            concluded = _parse_datetime(conclusion)
             deadline = _working_day_deadline(concluded)
             if now is None:
                 now = datetime.now(timezone.utc)
@@ -120,4 +209,5 @@ def validate_sar_narrative(narrative: str, retrieved_cases: list[dict],
         checks["rbi_str_deadline_status"] = "not_evaluated_missing_suspicion_concluded_at"
         errors.append("RBI suspicion_concluded_at is required to verify the STR filing deadline")
 
+    _validate_lerner_price(pricing or transaction.get("pricing", {}), checks, errors)
     return {"valid": not errors, "errors": errors, "checks": checks}

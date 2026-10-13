@@ -19,13 +19,21 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The dashboard opens at `http://localhost:8501`. It starts with the built-in sample data; use the sidebar to upload a CSV, Excel, JSON, or Parquet dataset with a binary `label` column. PII masking is enabled by default. Interactive Plotly figures support zoom, pan, hover details, selection, and legend toggles.
+The dashboard opens at `http://localhost:8501`. It starts with the built-in sample data; use the sidebar to upload a CSV, Excel, JSON, or Parquet dataset with a binary `label` column. PII masking is enabled by default. The Explorer tab has class and hour filters that update its charts and raw-data preview. All dashboard plots use Plotly with hover details, zoom, pan, selection, and legend toggles. A shared dark theme is configured in `.streamlit/config.toml`.
+
+### Deploy on Streamlit Community Cloud
+
+1. Push the repository to GitHub.
+2. In Streamlit Community Cloud, create an app from this repository and select `main` and `app.py`.
+3. Use Python 3.11 to match the included deployment configuration. Add optional credentials such as `GROQ_API_KEY` through the app's Secrets settings to enable integrations; the dashboard and built-in sample data run without them.
+
+For local Docker use, build from the repository root with `docker build -f Dockerfile.streamlit -t fraudguard-streamlit .` and run `docker run --rm -p 8501:8501 fraudguard-streamlit`.
 
 ### Dashboard areas
 
 | Area | What you can explore |
 |---|---|
-| Explorer | Fraud distribution, transaction amounts, temporal/channel patterns, correlation heatmap |
+| Explorer | Filter by fraud class and hour; inspect distributions, transaction amounts, temporal/channel patterns, correlation heatmap, and matching raw rows |
 | Train and Metrics | Train the ensemble, review ROC/PR, confusion matrix, threshold and cost curves |
 | Explainability and Drift | SHAP views, model drivers, and feature drift |
 | Predict and Live Stream | Score individual or simulated transactions and inspect changing risk |
@@ -58,11 +66,28 @@ Configure `KAFKA_BOOTSTRAP_SERVERS`, `DATABASE_URL`, and `REDIS_URL`, then start
 python -m src.streaming.kafka_consumer
 ```
 
+### Flink streaming job
+
+The optional PyFlink job consumes `financial.transactions.v1` and emits a
+customer feature snapshot every second from a trailing 10-second event-time
+window. It calculates transaction velocity, total amount, and device changes,
+then updates `fraudguard:features:customer:<customer_id>` in Redis. Configure
+`KAFKA_BOOTSTRAP_SERVERS`, `REDIS_URL`, and optionally `KAFKA_GROUP_ID`,
+`FLINK_PARALLELISM`, and `FLINK_MAX_OUT_OF_ORDERNESS_SECONDS`.
+
+Install the Flink dependencies with `pip install -r requirements-flink.txt`.
+The Flink cluster must also have the Kafka SQL/DataStream connector JAR matching
+its Flink version on the classpath. Submit with:
+
+```bash
+python -m src.streaming.flink_fraud_processor
+```
+
 The default topic is `financial.transactions.v1`; the default consumer group is `fraudguard-feature-pipeline`. PostgreSQL connectivity and Redis are required for the consumer.
 
 ## Graph fraud model
 
-The optional two-layer heterogeneous R-GCN uses customer, merchant, device, and IP nodes with transaction, shared-device, and associated-IP relations. It predicts transaction-edge fraud probability and node collusion risk. The training CLI writes embeddings and scores to Neo4j when a Neo4j backend is configured.
+The optional two-layer heterogeneous R-GCN uses customer, merchant, device, and IP nodes with transaction, shared-device, and associated-IP relations. It predicts transaction fraud, return-to-origin (RTO) probability, and node collusion risk. The training CLI writes learned embeddings and scores to Neo4j when a Neo4j backend is configured. Include a `fraud_type` column with RTO examples labeled `rto`, `rto_fraud`, `return_to_origin`, or `return_to_origin_fraud` to supervise its RTO head.
 
 ```bash
 python scripts/train_gnn_fraud.py data/transactions.csv --epochs 40
@@ -72,9 +97,9 @@ Provide a labeled transaction dataset with customer/merchant IDs and optional de
 
 ## Fraud Investigation Copilot
 
-The LangGraph pipeline retrieves historical vector chunks, gathers graph/SHAP signals, and drafts a SAR narrative. Guardrails checks require citations to retrieved chunk IDs and lexical support from cited context. Unverified output is withheld and routed to mandatory analyst review. Drafts are never auto-filed. RBI deadline validation requires `suspicion_concluded_at`, a holiday calendar, and `principal_officer_reason`; set `RBI_HOLIDAY_CALENDAR` to a newline-delimited list of `YYYY-MM-DD` holidays.
+The LangGraph pipeline retrieves historical vector chunks, gathers graph/SHAP signals, and drafts a SAR narrative. Guardrails checks require citations to retrieved chunk IDs and lexical support from cited context. Unverified output is withheld and routed to mandatory analyst review. Drafts are never auto-filed. Production writer validation requires `initial_detection_at` for FinCEN deadline checks, and `suspicion_concluded_at`, a holiday calendar, and `principal_officer_reason` for RBI checks. Set `RBI_HOLIDAY_CALENDAR` to a newline-delimited list of `YYYY-MM-DD` holidays. The FinCEN narrative limit is 20,000 characters. The optional Lerner cap applies when a `pricing` object with `proposed_price` and `marginal_cost` is supplied; `LERNER_INDEX_MAX` defaults to `0.30` and can be overridden per pricing object.
 
-OpenTelemetry spans wrap LangGraph nodes, vector searches, GNN lookups, and evaluation steps. Configure `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) to export traces. Spans intentionally avoid transaction text and retrieved document content.
+OpenTelemetry spans wrap LangGraph nodes, vector searches, graph/SHAP tools, GNN lookups, and evaluation steps. Configure `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) to export traces. Spans intentionally avoid transaction text, customer identifiers, and retrieved document content.
 
 Useful Copilot settings:
 
@@ -85,6 +110,7 @@ CHROMA_PERSIST_DIR           ChromaDB path (default: outputs/chroma_db)
 COPILOT_TOP_K                Number of retrieved precedent chunks
 SAR_JURISDICTION             Default SAR jurisdiction (US or RBI/India)
 RBI_HOLIDAY_CALENDAR         Newline-delimited holiday dates for RBI due-date checks
+LERNER_INDEX_MAX             Maximum allowed Lerner index (default 0.30)
 ```
 
 ## RAGAS audit evaluation

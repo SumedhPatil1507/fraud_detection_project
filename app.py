@@ -7,7 +7,11 @@ import time
 import json
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from pathlib import Path
+
+# Keep all charts visually consistent while preserving Plotly interactions.
+pio.templates.default = "plotly_dark"
 
 from src.pipeline import run_pipeline
 from src.model import train_model, safe_predict_proba
@@ -67,10 +71,13 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-[data-testid="metric-container"] { background:#1e1e2e; border-radius:8px; padding:12px; }
+[data-testid="metric-container"] { background:linear-gradient(145deg,#1b2638,#172131); border:1px solid rgba(148,163,184,.16); border-radius:12px; padding:14px; }
+[data-testid="stMetricLabel"] { color:#a9b8cc; }
+[data-testid="stMetricValue"] { color:#f4f7fb; }
 .stTabs [data-baseweb="tab"] { font-size:13px; font-weight:650; }
 .stTabs [data-baseweb="tab-list"] { gap:6px; }
-[data-testid="stAppViewContainer"] > .main { background:radial-gradient(ellipse at top left,rgba(231,76,60,.08),transparent 35%); }
+[data-testid="stAppViewContainer"] > .main { background:radial-gradient(ellipse at top left,rgba(69,214,165,.08),transparent 38%); }
+[data-testid="stSidebar"] { border-right:1px solid rgba(148,163,184,.14); }
 .block-container { padding-top:2rem; padding-bottom:3rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -205,41 +212,74 @@ with tab_data:
     c4.metric("Features", f"{df.shape[1] - 1}")
     c5.metric("Source", data_source)
 
-    with st.expander("📋 Raw Data", expanded=False):
-        st.dataframe(display_df.head(500), use_container_width=True)
+    st.subheader("Explore transactions")
+    filter_cols = st.columns([1.2, 1.8])
+    with filter_cols[0]:
+        selected_classes = st.multiselect(
+            "Transaction class", ["Legitimate", "Fraud"],
+            default=["Legitimate", "Fraud"], key="explorer_classes",
+        )
+    selected_labels = [label for label, name in ((0, "Legitimate"), (1, "Fraud"))
+                       if name in selected_classes]
+    explorer_df = df[df["label"].isin(selected_labels)]
+    if "hour" in explorer_df.columns and not explorer_df.empty:
+        numeric_hours = pd.to_numeric(explorer_df["hour"], errors="coerce")
+        available_hours = numeric_hours.dropna()
+        if not available_hours.empty:
+            min_hour = int(available_hours.min())
+            max_hour = int(available_hours.max())
+            if min_hour < max_hour:
+                with filter_cols[1]:
+                    selected_hours = st.slider(
+                        "Hour of day", min_hour, max_hour, (min_hour, max_hour),
+                        key="explorer_hours",
+                    )
+                explorer_df = explorer_df.loc[
+                    numeric_hours.between(selected_hours[0], selected_hours[1])
+                ]
+            else:
+                st.caption(f"Hour filter: all selected transactions are at {min_hour:02d}:00")
+    st.caption(f"Showing {len(explorer_df):,} of {len(df):,} transactions · charts update with these filters")
+
+    filtered_display_df = display_df.loc[explorer_df.index]
+    with st.expander("Raw transaction data", expanded=False):
+        st.dataframe(filtered_display_df.head(500), use_container_width=True)
 
     st.subheader("Distribution Analysis")
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(plot_class_distribution(df), use_container_width=True)
+        st.plotly_chart(plot_class_distribution(explorer_df), use_container_width=True)
     with c2:
-        st.plotly_chart(plot_amount_distribution(df), use_container_width=True)
+        st.plotly_chart(plot_amount_distribution(explorer_df), use_container_width=True)
 
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(plot_amount_box(df), use_container_width=True)
+        st.plotly_chart(plot_amount_box(explorer_df), use_container_width=True)
     with c2:
-        fig_scatter = plot_scatter_risk(df)
+        fig_scatter = plot_scatter_risk(explorer_df)
         if fig_scatter:
             st.plotly_chart(fig_scatter, use_container_width=True)
 
     st.subheader("Temporal & Channel Analysis")
     c1, c2 = st.columns(2)
     with c1:
-        fig_hour = plot_fraud_by_hour(df)
+        fig_hour = plot_fraud_by_hour(explorer_df)
         if fig_hour:
             st.plotly_chart(fig_hour, use_container_width=True)
     with c2:
-        fig_ch = plot_fraud_by_channel(df)
+        fig_ch = plot_fraud_by_channel(explorer_df)
         if fig_ch:
             st.plotly_chart(fig_ch, use_container_width=True)
 
-    fig_vel = plot_velocity_heatmap(df)
+    fig_vel = plot_velocity_heatmap(explorer_df)
     if fig_vel:
         st.plotly_chart(fig_vel, use_container_width=True)
 
     st.subheader("Correlation Heatmap")
-    st.plotly_chart(plot_correlation_heatmap(df), use_container_width=True)
+    if not explorer_df.empty:
+        st.plotly_chart(plot_correlation_heatmap(explorer_df), use_container_width=True)
+    else:
+        st.info("No transactions match the selected filters.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — TRAIN MODEL

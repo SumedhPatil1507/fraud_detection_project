@@ -72,9 +72,17 @@ def traced(name: str | None = None):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
             with span(span_name) as current:
-                result = function(*args, **kwargs)
-                if current is not None and isinstance(result, (list, tuple)):
-                    current.set_attribute("result.count", len(result))
+                try:
+                    result = function(*args, **kwargs)
+                except Exception as exc:
+                    if current is not None:
+                        current.set_attribute("operation.outcome", "error")
+                        current.set_attribute("error.type", type(exc).__name__)
+                    raise
+                if current is not None:
+                    current.set_attribute("operation.outcome", "success")
+                    if isinstance(result, (list, tuple)):
+                        current.set_attribute("result.count", len(result))
                 return result
         return wrapped
     return decorate

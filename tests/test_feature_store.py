@@ -10,6 +10,30 @@ import pytest
 feast = pytest.importorskip("feast")
 
 
+def test_feature_views_share_point_in_time_source_and_expected_schema():
+    repo = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "feature_definitions_under_test", repo / "feature_definitions.py"
+    )
+    definitions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(definitions)
+
+    source = definitions.transaction_features_source
+    assert source.timestamp_field == "event_timestamp"
+    assert source.created_timestamp_column == "created_timestamp"
+    assert definitions.customer_transaction_features.source == source
+    assert definitions.merchant_transaction_features.source == source
+    assert {field.name for field in definitions.customer_transaction_features.schema} == {
+        "customer_txn_count_5m", "customer_txn_count_1h", "customer_txn_count_24h",
+        "customer_amount_sum_1h", "customer_amount_sum_24h",
+        "customer_cross_channel_count_1h",
+    }
+    assert {field.name for field in definitions.merchant_transaction_features.schema} == {
+        "merchant_txn_count_5m", "merchant_txn_count_1h",
+        "merchant_amount_sum_1h", "merchant_cross_channel_count_1h",
+    }
+
+
 def test_historical_join_excludes_future_and_late_arriving_features(tmp_path, monkeypatch):
     """A row sees only feature values available by its event timestamp."""
     repo = Path(__file__).resolve().parents[1]

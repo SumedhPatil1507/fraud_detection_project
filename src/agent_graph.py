@@ -153,6 +153,7 @@ class CopilotState(TypedDict, total=False):
     writer_validation_errors: list
     writer_compliance_checks: dict
     writer_fallback_reason: str
+    pricing: dict
 
     # ── HITL bookkeeping ──────────────────────────────────────────────────────
     hitl_item_index:    int | None
@@ -193,7 +194,13 @@ def retriever_node(state: CopilotState) -> CopilotState:
     )
 
     log.info("[retriever] query: %s", query)
-    hits = search_all(query, top_k=COPILOT_TOP_K)
+    with span("copilot.vector.search_all", {
+        "vector.top_k": COPILOT_TOP_K,
+        "vector.query_characters": len(query),
+    }) as search_span:
+        hits = search_all(query, top_k=COPILOT_TOP_K)
+        if search_span is not None:
+            search_span.set_attribute("vector.result_count", len(hits))
     record_retriever_hits(len(hits))
     log.info("[retriever] retrieved %d cases", len(hits))
 
@@ -236,8 +243,11 @@ def _query_graph_intel(txn: dict) -> tuple[dict, list]:
             "transaction_amount": float(txn.get("transaction_amount", 0)),
             "label":              1,  # we're investigating a flagged transaction
         }])
-        G = build_transaction_graph(df_single)
-        graph_score = score_transaction_graph(customer_id, merchant_id, G)
+        with span("copilot.tool.graph_intelligence") as graph_span:
+            G = build_transaction_graph(df_single)
+            graph_score = score_transaction_graph(customer_id, merchant_id, G)
+            if graph_span is not None:
+                graph_span.set_attribute("graph.node_count", G.number_of_nodes() if G else 0)
     except Exception as exc:
         log.warning("[tool_agent] graph scoring failed: %s", exc)
         graph_score = {
@@ -297,7 +307,10 @@ def _query_shap(state: CopilotState) -> list[dict]:
         return []
 
     try:
-        factors = get_top_shap_factors(model, input_df, feat_names, top_n=6)
+        with span("copilot.tool.shap_factors") as shap_span:
+            factors = get_top_shap_factors(model, input_df, feat_names, top_n=6)
+            if shap_span is not None:
+                shap_span.set_attribute("shap.result_count", len(factors))
         return factors
     except Exception as exc:
         log.warning("[tool_agent] SHAP query failed: %s", exc)
@@ -511,7 +524,8 @@ def writer_node(state: CopilotState) -> CopilotState:
     # ── Build AI-enriched narrative ───────────────────────────────────────────
     narrative = _candidate_narrative(state)
     validation = validate_sar_narrative(
-        narrative, state.get("retrieved_cases", []), txn
+        narrative, state.get("retrieved_cases", []), txn,
+        pricing=state.get("pricing"), require_filing_dates=True,
     )
     with span("copilot.writer.guardrail_validation") as guard_span:
         if guard_span is not None:
@@ -751,6 +765,7 @@ def run_copilot(
     model=None,
     input_df: "pd.DataFrame | None" = None,
     feature_names: "list[str] | None" = None,
+    pricing: dict | None = None,
 ) -> dict:
     """
     Run the full Fraud Investigation Copilot pipeline for one transaction.
@@ -767,6 +782,8 @@ def run_copilot(
         Single-row DataFrame aligned to the model's feature set.
     feature_names : list[str], optional
         Feature names matching input_df columns.
+    pricing : dict, optional
+        Proposed price and marginal cost for Lerner-index validation.
 
     Returns
     -------
@@ -800,6 +817,7 @@ def run_copilot(
         "writer_validation_errors": [],
         "writer_compliance_checks": {},
         "writer_fallback_reason": "",
+        "pricing": pricing or {},
         "hitl_item_index":   None,
     }
 

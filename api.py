@@ -12,9 +12,11 @@ Swagger UI: http://localhost:8000/docs
 import pickle
 import os
 import asyncio
+import json
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -102,17 +104,134 @@ class Transaction(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    fraud_probability:   float
-    is_fraud:            bool
-    risk_level:          str
-    threshold_used:      float
-    validation_warnings: List[str] = []
-    shadow:              Optional[dict] = None
-    graph:               Optional[dict] = None
+    verdict: str
+    reasoning: str
+    recommendation: str
+    next_steps: List[str]
 
 
 class BatchRequest(BaseModel):
     transactions: List[Transaction]
+
+
+RESPONSE_KEYS = {"verdict", "reasoning", "recommendation", "next_steps"}
+
+
+def _standard_response(verdict: str, reasoning: str, recommendation: str,
+                       next_steps: List[str]) -> dict:
+    """Build the API's single public JSON contract, with no extra properties."""
+    return {"verdict": verdict, "reasoning": reasoning,
+            "recommendation": recommendation, "next_steps": next_steps}
+
+
+def _fraud_explanation(txn: Transaction, probability: float,
+                       input_df: pd.DataFrame, threshold: float) -> dict:
+    """Combine model probability, SHAP contributions, graph centrality and GNN signals."""
+    from src.llm_explain import get_top_shap_factors
+    from src.graph_intelligence import build_transaction_graph, score_transaction_graph
+
+    factors = get_top_shap_factors(_model, input_df, _features or [], top_n=5)
+    shap_text = "; ".join(
+        f"{item['feature']} {item['direction']} risk by {item['shap_impact']:+.4f}"
+        for item in factors
+    ) or "SHAP contributions unavailable"
+    graph_score = {}
+    gnn_scores = {}
+    ring_detected = False
+    if txn.customer_id and txn.merchant_id:
+        try:
+            graph = build_transaction_graph(pd.DataFrame([{
+                "customer_id": txn.customer_id,
+                "merchant_id": txn.merchant_id,
+                "transaction_amount": txn.transaction_amount,
+                "label": int(probability >= threshold),
+            }]))
+            graph_score = score_transaction_graph(txn.customer_id, txn.merchant_id, graph)
+            ring_members = {
+                member for ring in load_ring_log()
+                for member in ring.get("members", [])
+            }
+            ring_detected = (f"C_{txn.customer_id}" in ring_members
+                             or f"M_{txn.merchant_id}" in ring_members)
+            adapter = get_graph_adapter()
+            if adapter.backend == "neo4j":
+                gnn_scores = adapter.get_gnn_scores(txn.customer_id, txn.merchant_id)
+        except Exception:
+            # A failed optional graph source is reported as unavailable, never as a zero-risk signal.
+            graph_score = {}
+
+    graph_text = (
+        f"graph centrality/risk={graph_score['graph_risk_score']:.4f}"
+        if graph_score and "graph_risk_score" in graph_score
+        else "graph centrality unavailable"
+    )
+    if gnn_scores:
+        graph_text += f", R-GCN collusion={gnn_scores.get('gnn_collusion_risk', 0):.4f}"
+        ring_detected = ring_detected or gnn_scores.get("gnn_collusion_risk", 0) >= 0.7
+
+    high_risk = probability >= max(threshold, 0.7) or ring_detected
+    medium_risk = probability >= threshold
+    if ring_detected:
+        verdict = "HIGH_RISK_COLLUSION_RING_DETECTED"
+        recommendation = "Freeze payout and escalate to FIU/compliance review"
+        next_steps = [
+            "Step 1: Enqueue to HITL review queue",
+            "Step 2: Cross-reference PAN/SSN in fraud database where authorized",
+            "Step 3: Dispatch field audit if required by the investigator",
+        ]
+    elif high_risk:
+        verdict = "HIGH_RISK_FRAUD_DETECTED"
+        recommendation = "Freeze payout and escalate for investigator review"
+        next_steps = [
+            "Step 1: Enqueue to HITL review queue",
+            "Step 2: Validate identity and transaction evidence",
+            "Step 3: Escalate to FIU when statutory reporting criteria are met",
+        ]
+    elif medium_risk:
+        verdict = "REVIEW_FRAUD_RISK"
+        recommendation = "Hold for analyst review"
+        next_steps = [
+            "Step 1: Enqueue to HITL review queue",
+            "Step 2: Review SHAP and graph evidence",
+        ]
+    else:
+        verdict = "CLEAR_AUTO_APPROVE"
+        recommendation = "Auto-approve under the configured risk threshold"
+        next_steps = ["Step 1: Record the decision and continue monitoring"]
+
+    reasoning = (
+        f"Fraud probability={probability:.4f} at threshold={threshold:.4f}; "
+        f"R-GCN/graph {graph_text}; XGBoost SHAP contributions: {shap_text}."
+    )
+    return _standard_response(verdict, reasoning, recommendation, next_steps)
+
+
+@app.middleware("http")
+async def standardize_json_responses(request: Request, call_next):
+    """Normalize every JSON route response, including framework error bodies."""
+    response = await call_next(request)
+    if "application/json" not in response.headers.get("content-type", ""):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    try:
+        payload = json.loads(body or b"null")
+    except (TypeError, ValueError):
+        payload = {"message": "Response could not be decoded as JSON"}
+    if isinstance(payload, dict) and set(payload) == RESPONSE_KEYS:
+        standardized = payload
+    else:
+        status = response.status_code
+        standardized = _standard_response(
+            "REQUEST_REJECTED" if status >= 400 else "API_OPERATION_COMPLETED",
+            json.dumps(payload, default=str, ensure_ascii=False),
+            "Correct the request or review the operation result",
+            ["Step 1: Review the reasoning details", "Step 2: Retry or escalate as appropriate"],
+        )
+    if response.background is not None:
+        await response.background()
+    return JSONResponse(standardized, status_code=response.status_code,
+                        headers={key: value for key, value in response.headers.items()
+                                 if key.lower() not in {"content-length", "content-type"}})
 
 
 def build_input(txn: Transaction) -> pd.DataFrame:
@@ -183,13 +302,7 @@ async def predict(txn: Transaction, background_tasks: BackgroundTasks,
         background_tasks.add_task(_bg_log, txn.transaction_amount, txn.distance_from_home_km,
                                    txn.hour or 0, txn.is_foreign or 0, txn.is_new_device or 0,
                                    txn.vpn_detected or 0, prob, is_fraud, threshold)
-        return PredictionResponse(
-            fraud_probability=round(prob, 4), is_fraud=is_fraud,
-            risk_level=risk_label(prob), threshold_used=threshold,
-            validation_warnings=vr.warnings,
-            shadow=shadow if shadow.get("shadow_available") else None,
-            graph=graph_ctx,
-        )
+        return PredictionResponse(**_fraud_explanation(txn, prob, input_df, threshold))
     except Exception as e:
         raise HTTPException(500, detail=str(e))
 
@@ -203,7 +316,9 @@ async def predict_batch(req: BatchRequest, background_tasks: BackgroundTasks,
     async def _score(txn):
         vr = validate_transaction(txn.model_dump())
         if not vr.valid:
-            return {"error": vr.errors}
+            return _standard_response("REQUEST_REJECTED", "; ".join(vr.errors),
+                                      "Correct the invalid transaction fields",
+                                      ["Step 1: Correct the request", "Step 2: Submit it again"])
         try:
             input_df  = build_input(txn)
             prob      = float(safe_predict_proba(_model, input_df)[0][1])
@@ -212,13 +327,24 @@ async def predict_batch(req: BatchRequest, background_tasks: BackgroundTasks,
             background_tasks.add_task(_bg_log, txn.transaction_amount, txn.distance_from_home_km,
                                        txn.hour or 0, txn.is_foreign or 0, txn.is_new_device or 0,
                                        txn.vpn_detected or 0, prob, is_fraud, threshold)
-            return {"fraud_probability": round(prob,4), "is_fraud": is_fraud,
-                    "risk_level": risk_label(prob), "warnings": vr.warnings}
+            return _fraud_explanation(txn, prob, input_df, threshold)
         except Exception as e:
-            return {"error": str(e)}
+            return _standard_response("SCORING_ERROR", type(e).__name__,
+                                     "Escalate the scoring failure for investigation",
+                                     ["Step 1: Record the failed transaction", "Step 2: Retry after service recovery"])
 
     results = await asyncio.gather(*[_score(t) for t in req.transactions])
-    return {"predictions": list(results), "count": len(results)}
+    priority = {"HIGH_RISK_COLLUSION_RING_DETECTED": 4, "HIGH_RISK_FRAUD_DETECTED": 3,
+                "REVIEW_FRAUD_RISK": 2, "CLEAR_AUTO_APPROVE": 1, "REQUEST_REJECTED": 0,
+                "SCORING_ERROR": 0}
+    worst = max(results, key=lambda result: priority.get(result["verdict"], 0),
+                 default=_standard_response("CLEAR_AUTO_APPROVE", "Empty batch",
+                                            "No transactions to score", []))
+    return _standard_response(
+        worst["verdict"],
+        f"Batch size={len(results)}. " + " | ".join(item["reasoning"] for item in results),
+        worst["recommendation"], worst["next_steps"],
+    )
 
 
 @app.get("/audit", tags=["Audit"])
@@ -239,7 +365,10 @@ async def create_sar(txn: Transaction, background_tasks: BackgroundTasks,
         raise HTTPException(503, "Model not loaded.")
     input_df = build_input(txn)
     prob     = float(safe_predict_proba(_model, input_df)[0][1])
-    return generate_sar(txn.model_dump(), prob, [], threshold=txn.threshold or 0.3)
+    sar = generate_sar(txn.model_dump(), prob, [], threshold=txn.threshold or 0.3)
+    explanation = _fraud_explanation(txn, prob, input_df, txn.threshold or 0.3)
+    explanation["reasoning"] += f" SAR draft {sar['sar_id']} created with status {sar['status']}."
+    return explanation
 
 
 @app.get("/sar/list", tags=["SAR"])

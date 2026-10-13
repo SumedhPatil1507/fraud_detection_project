@@ -1,4 +1,4 @@
-"""Two-layer heterogeneous R-GCN for transaction fraud and collusion risk."""
+"""Two-layer heterogeneous R-GCN for transaction, RTO, and collusion risk."""
 from __future__ import annotations
 
 from typing import Dict, Tuple
@@ -65,6 +65,9 @@ if torch is not None:
             self.edge_fraud_head = nn.Sequential(
                 nn.Linear(embedding_dim * 3, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
             )
+            self.edge_rto_head = nn.Sequential(
+                nn.Linear(embedding_dim * 3, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
+            )
 
         def forward(self, x_dict: Dict[str, Tensor], edge_index_dict: Dict,
                     transaction_edge_index: Tensor):
@@ -82,9 +85,10 @@ if torch is not None:
             edge_features = torch.cat((customer_embedding, merchant_embedding,
                                        customer_embedding * merchant_embedding), dim=-1)
             edge_logits = self.edge_fraud_head(edge_features).squeeze(-1)
+            rto_logits = self.edge_rto_head(edge_features).squeeze(-1)
             node_logits = {key: self.node_collusion_head[key](value).squeeze(-1)
                            for key, value in embeddings.items()}
-            return embeddings, edge_logits, node_logits
+            return embeddings, edge_logits, rto_logits, node_logits
 else:
     class HeteroFraudRGCN:  # pragma: no cover - used only without optional GNN deps
         def __init__(self, *args, **kwargs):
@@ -98,9 +102,10 @@ def score_transaction_edges(model, graph):
     model.eval()
     edge_index = graph["customer", "filed_transaction", "merchant"].edge_index
     with torch.no_grad():
-        embeddings, edge_logits, node_logits = model(
+        embeddings, edge_logits, rto_logits, node_logits = model(
             graph.x_dict, graph.edge_index_dict, edge_index
         )
         return ({key: value.cpu() for key, value in embeddings.items()},
                 torch.sigmoid(edge_logits).cpu(),
+                torch.sigmoid(rto_logits).cpu(),
                 {key: torch.sigmoid(value).cpu() for key, value in node_logits.items()})

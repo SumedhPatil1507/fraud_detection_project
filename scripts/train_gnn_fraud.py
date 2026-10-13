@@ -28,6 +28,16 @@ def train(args: argparse.Namespace) -> dict:
     frame = pd.read_csv(args.input)
     if args.label_column != "label":
         frame = frame.rename(columns={args.label_column: "label"})
+    if "fraud_type" not in frame.columns:
+        raise ValueError("Input must include fraud_type to train the RTO detection head")
+    normalized_fraud_type = (frame["fraud_type"].fillna("").astype(str).str.lower()
+                             .str.replace("-", "_", regex=False)
+                             .str.replace(" ", "_", regex=False))
+    rto_labels = torch.tensor(
+        normalized_fraud_type.isin(
+            {"rto", "rto_fraud", "return_to_origin", "return_to_origin_fraud"}
+        ).astype(float).to_numpy(), dtype=torch.float32
+    )
     graph = build_heterogeneous_graph(frame)
     edge_index = graph["customer", "filed_transaction", "merchant"].edge_index
     edge_labels = graph["customer", "filed_transaction", "merchant"].edge_label
@@ -40,20 +50,24 @@ def train(args: argparse.Namespace) -> dict:
     model.train()
     for epoch in range(1, args.epochs + 1):
         optimizer.zero_grad()
-        _, edge_logits, node_logits = model(graph.x_dict, graph.edge_index_dict, edge_index)
+        _, edge_logits, rto_logits, node_logits = model(
+            graph.x_dict, graph.edge_index_dict, edge_index
+        )
         edge_loss = F.binary_cross_entropy_with_logits(edge_logits, edge_labels)
+        rto_loss = F.binary_cross_entropy_with_logits(rto_logits, rto_labels)
         node_losses = [
             F.binary_cross_entropy_with_logits(node_logits[kind], graph[kind].y)
             for kind in HETERO_NODE_TYPES if graph[kind].y.numel()
         ]
-        loss = edge_loss + args.node_loss_weight * torch.stack(node_losses).mean()
+        loss = (edge_loss + args.rto_loss_weight * rto_loss
+                + args.node_loss_weight * torch.stack(node_losses).mean())
         loss.backward()
         optimizer.step()
         if epoch == 1 or epoch % args.log_every == 0 or epoch == args.epochs:
             print(f"epoch={epoch}/{args.epochs} loss={loss.item():.6f} "
-                  f"edge_loss={edge_loss.item():.6f}")
+                  f"edge_loss={edge_loss.item():.6f} rto_loss={rto_loss.item():.6f}")
 
-    embeddings, edge_probabilities, node_probabilities = score_transaction_edges(model, graph)
+    embeddings, edge_probabilities, rto_probabilities, node_probabilities = score_transaction_edges(model, graph)
     node_outputs = {}
     for kind in HETERO_NODE_TYPES:
         node_outputs[kind] = [
@@ -73,6 +87,7 @@ def train(args: argparse.Namespace) -> dict:
             "amount": float(row["transaction_amount"]),
             "label": float(row["label"]),
             "fraud_probability": float(edge_probabilities[position]),
+            "rto_probability": float(rto_probabilities[position]),
         })
 
     adapter = GraphAdapter()
@@ -104,12 +119,18 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=0.003)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--node-loss-weight", type=float, default=0.5)
+    parser.add_argument("--rto-loss-weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--model-out", default="outputs/gnn_fraud.pt")
     args = parser.parse_args()
     if args.epochs < 1 or args.log_every < 1:
         parser.error("--epochs and --log-every must be positive")
+    frame = pd.read_csv(args.input)
+    if args.label_column not in frame.columns:
+        parser.error(f"label column {args.label_column!r} is missing")
+    if "fraud_type" not in frame.columns:
+        parser.error("input must include fraud_type to train the RTO detection head")
     result = train(args)
     print("Training complete:", result)
 
