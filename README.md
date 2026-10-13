@@ -25,7 +25,9 @@ The dashboard opens at `http://localhost:8501`. It starts with the built-in samp
 
 1. Push the repository to GitHub.
 2. In Streamlit Community Cloud, create an app from this repository and select `main` and `app.py`.
-3. Use Python 3.11 to match the included deployment configuration. Add optional credentials such as `GROQ_API_KEY` through the app's Secrets settings to enable integrations; the dashboard and built-in sample data run without them.
+3. Select Python 3.12 in Streamlit's Advanced settings. Add optional credentials such as `GROQ_API_KEY` through the app's Secrets settings to enable integrations; the dashboard and built-in sample data run without them.
+
+If an existing Community Cloud app was created with Python 3.14, changing this repository will not change that app's interpreter. Streamlit requires deleting and redeploying the app to change Python versions; select 3.12 during redeployment and re-enter any secrets. See [Streamlit's Python version guidance](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app/upgrade-python).
 
 For local Docker use, build from the repository root with `docker build -f Dockerfile.streamlit -t fraudguard-streamlit .` and run `docker run --rm -p 8501:8501 fraudguard-streamlit`.
 
