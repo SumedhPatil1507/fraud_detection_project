@@ -476,17 +476,29 @@ with tab_shap:
                         "Feature Value": float(X_sample.iloc[si, fi]),
                     })
             bees_df  = pd.DataFrame(bees_rows)
-            bees_fig = px.strip(
-                bees_df, x="SHAP Value", y="Feature", color="Feature Value",
-                color_continuous_scale="RdBu_r", orientation="h",
-                title=f"SHAP Beeswarm (Top {bees_top} Features)",
-                hover_data=["Feature Value"],
+            bees_df = bees_df.replace([np.inf, -np.inf], np.nan).dropna(
+                subset=["SHAP Value", "Feature Value"]
             )
-            bees_fig.update_traces(marker=dict(size=4, opacity=0.7))
+            bees_fig = go.Figure(go.Scatter(
+                x=bees_df["SHAP Value"], y=bees_df["Feature"], mode="markers",
+                marker=dict(
+                    size=5, opacity=0.7, color=bees_df["Feature Value"],
+                    colorscale="RdBu_r", colorbar=dict(title="Feature Value"),
+                ),
+                customdata=bees_df[["Feature Value"]].to_numpy(),
+                hovertemplate=(
+                    "<b>%{y}</b><br>SHAP = %{x:.4f}<br>"
+                    "Feature value = %{customdata[0]:.4g}<extra></extra>"
+                ),
+            ))
             bees_fig.update_layout(
+                title=f"SHAP Beeswarm (Top {bees_top} Features)",
+                xaxis_title="SHAP Value",
+                yaxis=dict(categoryorder="array", categoryarray=list(reversed(
+                    [feat_cols[i] for i in bees_idx]
+                ))),
                 height=max(460, bees_top * 34),
                 margin=dict(l=180),
-                coloraxis_colorbar=dict(title="Feature Value"),
             )
             bees_fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
             st.plotly_chart(bees_fig, use_container_width=True)

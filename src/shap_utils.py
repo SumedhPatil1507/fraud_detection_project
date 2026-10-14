@@ -149,25 +149,38 @@ def plot_shap_beeswarm(model, X_sample: pd.DataFrame, top_n: int = 15) -> go.Fig
                 rows.append({
                     "Feature":        fname,
                     "SHAP Value":     float(sv[si, fi]),
-                    "Feature Value":  float(X_sample.iloc[si, fi]),
+                    "Feature Value":  pd.to_numeric(
+                        pd.Series([X_sample.iloc[si, fi]]), errors="coerce"
+                    ).iloc[0],
                 })
         plot_df = pd.DataFrame(rows)
-
-        fig = px.strip(
-            plot_df,
-            x="SHAP Value",
-            y="Feature",
-            color="Feature Value",
-            color_continuous_scale="RdBu_r",
-            orientation="h",
-            title=f"SHAP Beeswarm (Top {top_n} Features)",
-            hover_data=["Feature Value"],
+        plot_df["SHAP Value"] = pd.to_numeric(plot_df["SHAP Value"], errors="coerce")
+        plot_df["Feature Value"] = pd.to_numeric(plot_df["Feature Value"], errors="coerce")
+        plot_df = plot_df.replace([np.inf, -np.inf], np.nan).dropna(
+            subset=["SHAP Value", "Feature Value"]
         )
-        fig.update_traces(marker=dict(size=4, opacity=0.7))
+        fig = go.Figure(go.Scatter(
+            x=plot_df["SHAP Value"],
+            y=plot_df["Feature"],
+            mode="markers",
+            marker=dict(
+                size=5, opacity=0.7, color=plot_df["Feature Value"],
+                colorscale="RdBu_r", colorbar=dict(title="Feature Value"),
+            ),
+            customdata=plot_df[["Feature Value"]].to_numpy(),
+            hovertemplate=(
+                "<b>%{y}</b><br>SHAP = %{x:.4f}<br>"
+                "Feature value = %{customdata[0]:.4g}<extra></extra>"
+            ),
+        ))
         fig.update_layout(
+            title=f"SHAP Beeswarm (Top {top_n} Features)",
+            xaxis_title="SHAP Value",
+            yaxis=dict(categoryorder="array", categoryarray=list(reversed(
+                [feat_names[i] for i in top_idx]
+            ))),
             height=max(450, top_n * 32),
             margin=dict(l=160),
-            coloraxis_colorbar=dict(title="Feature Value"),
         )
         fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
         return fig
