@@ -19,6 +19,11 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
+`requirements.txt` contains the Streamlit dashboard runtime. Optional copilot/vector,
+GNN, Feast, streaming, and API dependencies are kept in `requirements-full.txt`;
+the dashboard falls back when those optional integrations are not installed. The
+Render API service installs the full dependency file from `render.yaml`.
+
 The dashboard opens at `http://localhost:8501`. It starts with the built-in sample data; use the sidebar to upload a CSV, Excel, JSON, or Parquet dataset with a binary `label` column. PII masking is enabled by default. The Explorer tab has class and hour filters that update its charts and raw-data preview. All dashboard plots use Plotly with hover details, zoom, pan, selection, and legend toggles. A shared dark theme is configured in `.streamlit/config.toml`.
 
 ### Deploy on Streamlit Community Cloud
