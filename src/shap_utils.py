@@ -63,15 +63,22 @@ def _extract_shap_array(raw) -> np.ndarray:
     Handles:
     - shap.Explanation objects  (shap >= 0.46)
     - list [neg_class, pos_class]  (binary TreeExplainer old API)
-    - plain ndarray
+    - plain ndarray, including multi-output arrays from newer SHAP releases
     """
     if hasattr(raw, 'values'):          # Explanation object
         raw = raw.values
     if isinstance(raw, list):           # binary classifier list
         raw = raw[1]
-    raw = np.array(raw)
+    raw = np.asarray(raw)
+    if raw.dtype.kind not in "biufc":
+        raw = raw.astype(float)
+    if raw.ndim == 3:
+        # SHAP's multi-output layout is samples x features x outputs.
+        raw = raw[..., 1] if raw.shape[-1] > 1 else raw[..., 0]
     if raw.ndim == 1:
         raw = raw.reshape(1, -1)
+    if raw.ndim != 2:
+        raise ValueError(f"Expected 2-D SHAP values after normalization; got shape {raw.shape}")
     return raw
 
 

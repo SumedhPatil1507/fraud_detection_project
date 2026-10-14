@@ -157,14 +157,14 @@ def _compute_shap_cached(_model_key: str, X_values: "np.ndarray",
         xgb = inner.estimators_[0] if hasattr(inner, "estimators_") else inner
         explainer = _shap.TreeExplainer(xgb)
         X_df = pd.DataFrame(X_values, columns=feat_cols)
-        raw  = explainer.shap_values(X_df)
-        if hasattr(raw, "values"):
-            raw = raw.values
-        if isinstance(raw, list):
-            raw = raw[1]
-        arr = np.array(raw)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
+        raw = explainer.shap_values(X_df)
+        from src.shap_utils import _extract_shap_array
+        arr = _extract_shap_array(raw)
+        if arr.shape[1] != len(feat_cols):
+            return None, [], (
+                f"SHAP returned {arr.shape[1]} feature values for "
+                f"{len(feat_cols)} input features."
+            )
         return arr, feat_cols, ""
     except ValueError as e:
         if "base_score" in str(e) or "could not convert" in str(e):
@@ -535,14 +535,20 @@ with tab_shap:
                         _raw = _raw.values
                     if isinstance(_raw, list):
                         _raw = _raw[1]
-                    sv_row = np.array(_raw)
-                    if sv_row.ndim > 1:
-                        sv_row = sv_row[0]
+                    from src.shap_utils import _extract_shap_array
+                    sv_row = _extract_shap_array(_raw)[0]
+                    feature_values = pd.to_numeric(
+                        input_df.iloc[0], errors="coerce"
+                    ).to_numpy(dtype=float)
+                    if len(sv_row) != len(features):
+                        raise ValueError(
+                            f"SHAP returned {len(sv_row)} values for {len(features)} features"
+                        )
 
                     single_df = pd.DataFrame({
                         "Feature":       features,
                         "SHAP Value":    sv_row,
-                        "Feature Value": input_df.values[0],
+                        "Feature Value": feature_values,
                     }).sort_values("SHAP Value", key=abs, ascending=False).head(14)
 
                     signed_fig = px.bar(
