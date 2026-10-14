@@ -47,18 +47,9 @@ def _unavailable_fig(msg: str = "SHAP unavailable — install shap>=0.46.0") -> 
     return fig
 
 
-def _build_explainer(_model, model_key):
-    """Build a TreeExplainer; model_key distinguishes model instances in cache."""
-    return _shap.TreeExplainer(_model)
-
-
-if _ST:
-    _build_explainer = st.cache_resource(show_spinner=False)(_build_explainer)
-
-
 def _get_explainer(model):
-    """Get the cached explainer without asking Streamlit to hash XGBoost."""
-    return _build_explainer(model, id(model))
+    """Build a TreeExplainer without passing the model through Streamlit caching."""
+    return _shap.TreeExplainer(model)
 
 
 def _extract_shap_array(raw) -> np.ndarray:
