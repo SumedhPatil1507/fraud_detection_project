@@ -14,7 +14,23 @@ from src.models.gnn_fraud import HeteroFraudRGCN, score_transaction_edges
 
 
 def test_api_json_contract_has_exact_standardized_keys():
-    from api import RESPONSE_KEYS, standardize_json_responses
+    from api import RESPONSE_KEYS, standardize_json_responses, _standard_response
+
+    steps = [
+        "Step 1: Enqueue to HITL review queue",
+        "Step 2: Cross-reference PAN/SSN in fraud database",
+        "Step 3: Dispatch field audit",
+    ]
+    risk_response = _standard_response(
+        "HIGH_RISK_COLLUSION_RING_DETECTED",
+        "R-GCN graph centrality/risk: 0.8; XGBoost SHAP feature contributions: velocity.",
+        "Freeze payout and escalate to FIU/compliance review", steps,
+    )
+    assert set(risk_response) == RESPONSE_KEYS
+    assert risk_response["verdict"] == "HIGH_RISK_COLLUSION_RING_DETECTED"
+    assert "R-GCN graph centrality" in risk_response["reasoning"]
+    assert "XGBoost SHAP" in risk_response["reasoning"]
+    assert risk_response["next_steps"] == steps
 
     scope = {"type": "http", "method": "GET", "path": "/health",
              "headers": [], "query_string": b"", "server": ("test", 80),

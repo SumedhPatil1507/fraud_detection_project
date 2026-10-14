@@ -201,8 +201,14 @@ def _fraud_explanation(txn: Transaction, probability: float,
 
     reasoning = (
         f"Fraud probability={probability:.4f} at threshold={threshold:.4f}; "
-        f"R-GCN/graph {graph_text}; XGBoost SHAP contributions: {shap_text}."
+        f"R-GCN graph centrality/risk: {graph_text}; "
+        f"XGBoost SHAP feature contributions: {shap_text}."
     )
+    next_steps = [
+        "Step 1: Enqueue to HITL review queue",
+        "Step 2: Cross-reference PAN/SSN in fraud database",
+        "Step 3: Dispatch field audit",
+    ]
     return _standard_response(verdict, reasoning, recommendation, next_steps)
 
 

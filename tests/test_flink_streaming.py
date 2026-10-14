@@ -63,6 +63,24 @@ def test_parse_transaction_rejects_negative_amount():
         }))
 
 
+def test_parse_transaction_rejects_timezone_naive_event_time():
+    with pytest.raises(ValueError, match="must include a timezone"):
+        parse_transaction(json.dumps({
+            "transaction_id": "txn-1", "customer_id": "customer-7",
+            "transaction_amount": 1, "event_timestamp": "2026-01-01T00:00:00",
+        }))
+
+
+def test_parse_transaction_accepts_bytes_and_normalizes_numeric_epoch_seconds():
+    event = parse_transaction(
+        b'{"transaction_id":"txn-2","customer_id":"customer-8",'
+        b'"transaction_amount":0,"event_timestamp":1767225600}'
+    )
+    assert event["event_time_ms"] == 1767225600000
+    assert event["transaction_amount"] == 0.0
+    assert event["device_id"] is None
+
+
 def test_window_features_are_independent_of_input_order():
     events = [
         {"transaction_id": "t2", "event_time_ms": 2000,
